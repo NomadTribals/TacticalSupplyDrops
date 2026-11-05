@@ -1,25 +1,53 @@
 
-# Visual Studio
+# Visual Studio / IDE
 .vs/
+.idea/
 *.user
 *.suo
-*.cache
+*.userosscache
+*.sln.docstates
 
 # Build output
 **/bin/
 **/obj/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# Compiled binaries
+*.dll
+*.exe
+*.pdb
+*.mdb
+*.cache
 
 # Test output
 TestResults/
+coverage/
+*.coverage
+*.coveragexml
 
-# Debug symbols and logs
-*.pdb
+# Logs
 *.log
 
 # Temporary files
 *.tmp
 *.bak
 *.old
+*.orig
+*~
+*_BACKUP.cs
+*_BACKUP_FINAL.cs
 
-# Archives
+# Archives and packages
 *.zip
+*.7z
+*.rar
+*.nupkg
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
