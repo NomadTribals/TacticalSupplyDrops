@@ -1,0 +1,25 @@
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.cache
+
+# Build output
+**/bin/
+**/obj/
+
+# Test output
+TestResults/
+
+# Debug symbols and logs
+*.pdb
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.old
+
+# Archives
+*.zip
