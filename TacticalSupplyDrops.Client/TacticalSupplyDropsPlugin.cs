@@ -47,7 +47,7 @@ namespace TacticalSupplyDrops.Client
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops",
     "nomadtribals-TacticalSupplyDrops",
-    "1.0.0")]
+    "1.0.1")]
     public class TacticalSupplyDropsPlugin : BaseUnityPlugin
     {
         private bool _windowOpen = false;

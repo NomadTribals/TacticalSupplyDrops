@@ -34,8 +34,8 @@ namespace TacticalSupplyDrops.Overlay
 
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops.overlay",
-    "Tactical Supply Drops Overlay",
-    "1.0.0")]
+    "nomadtribals-TacticalSupplyDropsOverlay",
+    "1.0.1")]
     [BepInDependency("com.anvil.weboverlay", "1.11.0")]
     public class TacticalSupplyDropsOverlayPlugin : BaseUnityPlugin
     {

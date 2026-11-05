@@ -1,6 +1,6 @@
 # nomadtribals — Tactical Supply Drops
 
-**Version:** 1.0.0  
+**Version:** 1.0.1  
 **Author:** nomadtribals  
 **Supported SPT Version:** 4.1.6  
 **License:** MIT
@@ -11,7 +11,7 @@ Tactical Supply Drops is a custom supply delivery system for SPT that allows pla
 
 Select your cargo, submit your purchase, deploy a flare, and wait for your delivery.
 
-**Download:** [Tactical Supply Drops v1.0.0](https://github.com/NomadTribals/TacticalSupplyDrops/releases/tag/v1.0.0)
+**Download:** [Tactical Supply Drops v1.0.0](https://github.com/NomadTribals/TacticalSupplyDrops/releases/tag/v1.0.1)
 
 ## Features
 
