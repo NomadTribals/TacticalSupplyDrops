@@ -1,4 +1,4 @@
-﻿using BepInEx;
+using BepInEx;
 using BepInEx.Configuration;
 using EFT.Airdrop;
 using HarmonyLib;
@@ -9,7 +9,7 @@ namespace TacticalSupplyDrops.Client
     public static class AirdropDevelopmentConfig
     {
         public static ConfigEntry<float> CrateMultiplier;
-        public static ConfigEntry<int> FlareWaitSeconds;
+
 
         public static void Initialize(ConfigFile config)
         {
@@ -19,30 +19,7 @@ namespace TacticalSupplyDrops.Client
                 3f,
                 "Crate descent and parachute speed multiplier.");
 
-            FlareWaitSeconds = config.Bind(
-                "Airdrop Release Settings",
-                "FlareWaitSeconds",
-                3,
-                "Seconds between successful flare activation and plane scheduling.");
-
             config.Save();
-        }
-    }
-
-    [HarmonyPatch(typeof(ServerAirdropManager), "get_PlaneAirdropFlareWait")]
-    public static class FlareWaitPatch
-    {
-        [HarmonyPostfix]
-        public static void Postfix(ref int __result)
-        {
-            if (AirdropDevelopmentConfig.FlareWaitSeconds == null)
-            {
-                return;
-            }
-
-            __result = Mathf.Max(
-                1,
-                AirdropDevelopmentConfig.FlareWaitSeconds.Value);
         }
     }
 

@@ -1,10 +1,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$SptRoot,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\release\2.0.0')
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\release\2.0.1')
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot
-$version = '2.0.0'
+$version = '2.0.1'
 $SptRoot = (Resolve-Path -LiteralPath $SptRoot).Path
 if (!(Test-Path -LiteralPath (Join-Path $SptRoot 'EscapeFromTarkov.exe'))) { throw 'SptRoot must point to the main SPT installation folder.' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)

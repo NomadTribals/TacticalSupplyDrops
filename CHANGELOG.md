@@ -1,3 +1,19 @@
+# Tactical Supply Drops 2.0.1 — Field OS 0.3.0
+
+- Add configurable interface accent colors, with presets, custom hex colors, and a restore-default option on the tablet Config tab.
+- Save the appearance choice in the plugin configuration; the F12 Appearance setting supports the same hex color.
+- Update Device Info to TSD Field OS 0.3.0.
+- Remove the obsolete flare-delay setting and its old flare timing patch.
+- Fix Cargo and Delivery content extending below the tablet screen in smaller windows.
+- Add vertical and horizontal scrolling when page content exceeds the available space.
+- Keep Cargo inventory and manifest lists independently scrollable, with room to reach the order controls.
+- Keep tablet navigation accessible when the available width is reduced.
+- Preserve the existing purchase, payment, and delivery behavior.
+
+Requires SPT 4.1.6 and Anvil WebOverlay 1.11.0. Close the game and server, then extract the ZIP into the main SPT folder and replace the included TSD files. Keep existing configuration and order data.
+
+---
+
 # Tactical Supply Drops 2.0.0
 
 - New TSD Field Terminal tablet model, inventory icon, and tablet interface.

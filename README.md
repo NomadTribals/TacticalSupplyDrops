@@ -8,9 +8,9 @@ Your cargo, traders, and delivery controls are now together in one device. Prepa
 
 **Flare signaling is no longer required.** Through the terminal's GPS link, TSD triangulates your position and tasks an aircraft to the nearest valid delivery point. Carry the tablet, confirm your cargo, and let our logistics team handle the rest.
 
-![Tactical Supply Drops 2.0 — TSD Field Terminal](https://raw.githubusercontent.com/NomadTribals/TacticalSupplyDrops/v2.0.0/images/TSD_2.0_Field_Terminal.png)
+![Tactical Supply Drops 2.0 — TSD Field Terminal](https://raw.githubusercontent.com/NomadTribals/TacticalSupplyDrops/v2.0.1/images/TSD_2.0_Field_Terminal.png)
 
-**Version:** 2.0.0 | **SPT:** 4.1.6 | **Author:** nomadtribals | **License:** MIT
+**Version:** 2.0.1 | **SPT:** 4.1.6 | **Author:** nomadtribals | **License:** MIT
 
 ## Features
 
@@ -20,13 +20,14 @@ Your cargo, traders, and delivery controls are now together in one device. Prepa
 - Purchase through **Mechanic LL1** for a base price of **₽75,000**.
 - Open the tablet from the menus or during a raid. Carry it in your PMC inventory to access it in the field.
 - Move and resize the tablet window to suit your screen.
+- Scroll vertically and horizontally when a page exceeds the available tablet space, keeping Cargo and Delivery controls reachable in smaller windows.
 
 ### Five operational tabs
 
 - **Cargo:** Search and browse your stash, navigate containers, select quantities, and build your flight manifest. Review and confirm the delivery fee before submitting your order. Cargo supports a maximum delivery footprint of **60 inventory cells**, with delivery pricing affected by Fence reputation.
 - **Delivery:** Authenticate the field link, confirm dispatch, and follow the terminal's communications as your aircraft is tasked. New cargo directs you to the next manifest instead of leaving you on a previously dispatched order.
 - **Procurement:** Browse vanilla and installed custom traders in their own sections. Purchase supplies for your next cargo manifest while retaining normal trader prices, loyalty and quest requirements, stock, and purchase limits.
-- **Config:** Change the tablet's open/close key and enable or disable its interface sounds.
+- **Config:** Change the tablet's open/close key, toggle interface sounds, and choose a saved interface accent color from presets or a custom hex value.
 - **Device Info:** View terminal identity, firmware, ownership information, and the installed mod version.
 
 ### Tablet controls and feedback
@@ -34,6 +35,8 @@ Your cargo, traders, and delivery controls are now together in one device. Prepa
 - Dedicated **brightness** buttons adjust the display for day or night use.
 - **Volume** buttons control tablet audio, including clicks, tab tones, order feedback, and background device sounds.
 - A **power button** controls the tablet's power sequence.
+- **Interface colors:** Choose a preset or custom hex color in Config, then apply it. The setting is also available through F12 under Appearance > InterfaceColor. Restore Gold returns the original theme.
+- **Firmware:** Device Info now shows TSD Field OS 0.3.0.
 - Separate **RUB, USD, and EUR** balances, with currency labels on trader prices.
 - TSD cargo crates emit **orange smoke** to help you locate your shipment.
 
@@ -62,7 +65,7 @@ Your cargo, traders, and delivery controls are now together in one device. Prepa
 
 1. Close the game and SPT server.
 2. Install the required **Anvil WebOverlay** dependency according to its instructions.
-3. Download **TacticalSupplyDrops-2.0.0.zip** from the [GitHub release](https://github.com/NomadTribals/TacticalSupplyDrops/releases/tag/v2.0.0).
+3. Download **TacticalSupplyDrops-2.0.1.zip** from the [GitHub release](https://github.com/NomadTribals/TacticalSupplyDrops/releases/tag/v2.0.1).
 4. Extract the archive into your **main SPT installation folder**, alongside `EscapeFromTarkov.exe`.
 5. Merge the included **BepInEx** and **SPT_Runtime** folders and replace the existing Tactical Supply Drops files.
 6. Start the server, then launch the game.
@@ -78,7 +81,7 @@ TSD is continuing to expand its field logistics service. Planned updates include
 - **Screen customization:** More ways to personalize the tablet's display and appearance.
 - **Expanded delivery coverage:** The ability to request supplies on maps that do not normally support airdrops.
 
-These are planned features and are **not included in version 2.0.0**. Release timing will be announced as development progresses.
+These are planned features and are **not included in version 2.0.1**. Release timing will be announced as development progresses.
 
 ## Source and build
 

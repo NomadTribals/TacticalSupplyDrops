@@ -50,7 +50,7 @@ namespace TacticalSupplyDrops.Client
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops",
     "nomadtribals-TacticalSupplyDrops",
-    "2.0.0")]
+    "2.0.1")]
     public class TacticalSupplyDropsPlugin : BaseUnityPlugin
     {
 
