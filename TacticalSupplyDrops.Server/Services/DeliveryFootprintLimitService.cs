@@ -1,4 +1,6 @@
-﻿using SPTarkov.DI.Annotations;
+﻿
+using SPTarkov.DI.Annotations;
+using System;
 using System.Collections.Generic;
 using TacticalSupplyDrops.Server.Models;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
@@ -8,7 +10,7 @@ namespace TacticalSupplyDrops.Server.Services;
 [Injectable]
 public class DeliveryFootprintLimitService(ItemFootprintService footprintService)
 {
-    public const int MaximumFootprint = 12;
+    public const int MaximumFootprint = 60;
 
     public int CalculateTotalFootprint(IEnumerable<Item> items)
     {

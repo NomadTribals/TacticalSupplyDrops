@@ -1,13 +1,14 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
+    <SptRoot Condition="'$(SptRoot)' == ''">$(MSBuildProjectDirectory)\..\..\..\SPT</SptRoot>
 		<TargetFramework>net10.0</TargetFramework>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 
-		<Version>1.0.1</Version>
-		<AssemblyVersion>1.0.1.0</AssemblyVersion>
-		<FileVersion>1.0.1.0</FileVersion>
+		<Version>2.0.0</Version>
+		<AssemblyVersion>2.0.0.0</AssemblyVersion>
+		<FileVersion>2.0.0.0</FileVersion>
 		<Product>Tactical Supply Drops</Product>
 		<Company>nomadtribals</Company>
 		<Description>Private air logistics and tactical supply delivery for SPT.</Description>
@@ -21,14 +22,18 @@
 
 	<Target Name="DeployTacticalSupplyDrops" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
 
-		<Copy SourceFiles="$(TargetPath)" DestinationFiles="F:\Games\SPT\SPT_Runtime\user\mods\TacticalSupplyDrops\TacticalSupplyDrops.Server.dll" OverwriteReadOnlyFiles="true" />
+		<Copy SourceFiles="$(TargetPath)" DestinationFiles="$(SptRoot)\SPT_Runtime\user\mods\TacticalSupplyDrops\TacticalSupplyDrops.Server.dll" OverwriteReadOnlyFiles="true" />
 
 		<Message Importance="high" Text="[TSD] Server DLL automatically deployed to SPT_Runtime." />
 
 	</Target>
+    <Target Name="DeployTsdBundleManifest" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
+        <Copy SourceFiles="$(MSBuildProjectDirectory)\bundles.json" DestinationFiles="$(SptRoot)\SPT_Runtime\user\mods\TacticalSupplyDrops\bundles.json" OverwriteReadOnlyFiles="true" />
+        <Message Importance="high" Text="[TSD] AssetBundle manifest deployed to SPT_Runtime." />
+    </Target>
 
 	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
-	  <Exec Command="if /I &quot;$(Configuration)&quot;==&quot;Debug&quot; (&#xA;    robocopy &quot;$(TargetDir).&quot; &quot;F:\Games\SPT\SPT_Runtime\user\mods\TacticalSupplyDrops&quot; &quot;$(TargetFileName)&quot; /COPY:DAT /IS /IT /R:2 /W:1&#xA;    if errorlevel 8 exit /b 1&#xA;    exit /b 0&#xA;)" />
+	  <Exec Command="if /I &quot;$(Configuration)&quot;==&quot;Debug&quot; (&#xA;    robocopy &quot;$(TargetDir).&quot; &quot;$(SptRoot)\SPT_Runtime\user\mods\TacticalSupplyDrops&quot; &quot;$(TargetFileName)&quot; /COPY:DAT /IS /IT /R:2 /W:1&#xA;    if errorlevel 8 exit /b 1&#xA;    exit /b 0&#xA;)" />
 	</Target>
 
 </Project>

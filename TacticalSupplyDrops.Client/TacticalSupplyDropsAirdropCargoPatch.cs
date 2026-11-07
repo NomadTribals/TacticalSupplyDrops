@@ -22,8 +22,8 @@ namespace TacticalSupplyDrops.Client
         // This must match AirDropTemplateId on the custom TSD flare.
         public const string TsdAirdropLootId = "TSD_ACTIVE_ORDER";
 
-        private const string CargoFilePath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\cargo.json";
+        private static readonly string CargoFilePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "cargo.json");
 
         private static readonly ManualLogSource Logger =
             BepInEx.Logging.Logger.CreateLogSource(

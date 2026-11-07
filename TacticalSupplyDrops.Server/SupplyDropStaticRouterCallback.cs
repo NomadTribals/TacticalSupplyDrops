@@ -1,4 +1,4 @@
-﻿using TacticalSupplyDrops.Server.Models;
+using TacticalSupplyDrops.Server.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -42,7 +42,9 @@ public class SupplyDropStaticRouterCallback(
     ProfileHelper profileHelper,
     IStashInventoryProvider stashInventoryProvider,
     IStashItemDetailsProvider stashItemDetailsProvider,
-    JsonUtil jsonUtil)
+    JsonUtil jsonUtil,
+    ProcurementRepository procurementRepository,
+    TraderProcurementService traderProcurement)
 {
     public ValueTask<string> HandleTest(
         string url,
@@ -56,7 +58,7 @@ public class SupplyDropStaticRouterCallback(
 
 
 
-    public ValueTask<string> HandleGetStash(
+    public async ValueTask<string> HandleGetStash(
         string url,
         MongoId sessionId)
     {
@@ -66,7 +68,7 @@ public class SupplyDropStaticRouterCallback(
         {
             logger.Warning("Tactical Supply Drops could not retrieve the PMC profile.");
 
-            return ValueTask.FromResult(
+            return (
                 "{\"success\":false,\"message\":\"PMC profile not found.\",\"items\":[]}");
         }
 
@@ -74,7 +76,7 @@ public class SupplyDropStaticRouterCallback(
         {
             logger.Warning("Tactical Supply Drops could not identify the stash container.");
 
-            return ValueTask.FromResult(
+            return (
                 "{\"success\":false,\"message\":\"Stash container not found.\",\"items\":[]}");
         }
 
@@ -84,7 +86,7 @@ public class SupplyDropStaticRouterCallback(
         {
             logger.Warning("Tactical Supply Drops received an invalid stash container ID.");
 
-            return ValueTask.FromResult(
+            return (
                 "{\"success\":false,\"message\":\"Invalid stash container ID.\",\"items\":[]}");
         }
 
@@ -102,6 +104,35 @@ public class SupplyDropStaticRouterCallback(
 
         Dictionary<string, StashItemDetails> detailsById =
             itemDetails.ToDictionary(details => details.ItemId);
+        // TEMPORARY DIAGNOSTICS: investigate missing rigs.
+        int armorCount = itemDetails.Count(item => item.Category == "ARMOR");
+        int otherCount = itemDetails.Count(item => item.Category == "OTHER");
+
+        logger.Info(
+            $"TSD DIAGNOSTICS: Total stash items: {stashItems.Count}, ARMOR: {armorCount}, OTHER: {otherCount}.");
+
+        foreach (StashItemDetails detail in itemDetails.Where(item =>
+                     item.Name.Contains("Thunderbolt", StringComparison.OrdinalIgnoreCase) ||
+                     item.Name.Contains("Hercules", StringComparison.OrdinalIgnoreCase)))
+        {
+            Item? diagnosticParent = null;
+
+            Item? diagnosticItem = stashItems.FirstOrDefault(item =>
+                (string)item.Id == detail.ItemId);
+
+            if (diagnosticItem != null &&
+                !string.IsNullOrWhiteSpace(diagnosticItem.ParentId))
+            {
+                itemsById.TryGetValue(diagnosticItem.ParentId, out diagnosticParent);
+            }
+
+            bool isInstalled = diagnosticItem != null &&
+                stashItemDetailsProvider.IsInstalledInEquipmentSlot(
+                    diagnosticItem, diagnosticParent);
+
+            logger.Info(
+                $"TSD RIG DIAGNOSTIC: {detail.Name} | Category: {detail.Category} | Installed: {isInstalled} | Item ID: {detail.ItemId}");
+        }
 
         List<SupplyDropStashItem> responseItems = new();
 
@@ -151,10 +182,20 @@ public class SupplyDropStaticRouterCallback(
         logger.Info(
             $"Tactical Supply Drops retrieved {responseItems.Count} selectable stash items. Hidden installed components: {hiddenInstalledItems}.");
 
-        return ValueTask.FromResult(
+        return (
             jsonUtil.Serialize(new
             {
                 success = true,
+                stashRootId = profile.Inventory?.Stash?.ToString(),
+                balanceRoubles = traderProcurement.GetBalance(profile),
+                wallet = traderProcurement.GetWallet(profile),
+                procurementCargo = (await procurementRepository.GetPurchasesAsync(profile.Id!.Value))
+                    .Where(p => p.Status == "Staged")
+                    .SelectMany(p => p.CargoSelections ?? new())
+                    .GroupBy(s => s.itemId)
+                    .Select(g => new ProcurementCargoSelection { itemId = g.Key, quantity = (int)Math.Min(int.MaxValue, g.Sum(s => (long)s.quantity)) })
+                    .Where(s => responseItems.Any(i => i.Id == s.itemId))
+                    .ToList(),
                 items = responseItems
             }, typeof(object)));
     }
@@ -279,6 +320,8 @@ public class SupplyDropStaticRouterCallback(
 
             return output;
         }
+
+        await traderProcurement.CommitCargoAsync(profile, result.Order.OrderId, request.SelectedItemQuantities, cancellationToken);
 
         if (result.IsDuplicate)
         {

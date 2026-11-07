@@ -1,9 +1,12 @@
-﻿using BepInEx;
+using BepInEx;
+using Comfort.Common;
+using EFT;
+using EFT.InventoryLogic;
 using SPT.Common.Http;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -47,37 +50,47 @@ namespace TacticalSupplyDrops.Client
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops",
     "nomadtribals-TacticalSupplyDrops",
-    "1.0.1")]
+    "2.0.0")]
     public class TacticalSupplyDropsPlugin : BaseUnityPlugin
     {
-        private bool _windowOpen = false;
-
-        private Rect _windowRect =
-            new Rect(100, 100, 900, 650);
 
         private string _statusMessage = "Ready to connect.";
-        private string _searchText = "";
 
         private List<StashItem> _stashItems =
             new List<StashItem>();
 
-        private HashSet<string> _selectedItemIds =
-            new HashSet<string>();
-
-        private Vector2 _scrollPosition = Vector2.zero;
-
-        private GUIStyle _titleStyle;
-        private GUIStyle _itemNameStyle;
-        private GUIStyle _itemDetailsStyle;
-        private GUIStyle _sectionStyle;
-
         private bool _orderInProgress;
         private bool _procurementPurchaseInProgress;
+        private bool _procurementCatalogInProgress;
         private bool _stashRefreshInProgress;
         private bool _orderLookupInProgress;
+        private bool _deliveryDispatchInProgress;
+        private float _tabletAccessRefreshTimer;
+        private readonly HashSet<string> _dispatchedOrderIds =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        private const string OrderFolderPath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops";
+        private static readonly string OrderFolderPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops");
+
+        private const string FieldTerminalTemplateId =
+            "6a0000000000000000000002";
+
+        private const string ActiveOrderCargoId = "TSD_ACTIVE_ORDER";
+
+        private string TabletAccessPath =>
+            Path.Combine(OrderFolderPath, "tablet-access.json");
+
+        private string DeliveryDispatchRequestPath =>
+            Path.Combine(OrderFolderPath, "delivery-dispatch-request.json");
+
+        private string DeliveryDispatchStatusPath =>
+            Path.Combine(OrderFolderPath, "delivery-dispatch-status.json");
+
+        private string DispatchedOrdersPath =>
+            Path.Combine(OrderFolderPath, "dispatched-orders.json");
+
+        private string CargoFilePath =>
+            Path.Combine(OrderFolderPath, "cargo.json");
 
         private string OrderRequestPath =>
             Path.Combine(OrderFolderPath, "order-request.json");
@@ -124,6 +137,8 @@ namespace TacticalSupplyDrops.Client
 
             FlareDetection.Initialize(Logger);
             AirdropDustRecolor.Initialize(Logger);
+            LoadDispatchedOrders();
+            UpdateTabletAccessState();
 
             new HarmonyLib.Harmony(
                 "com.nomadtribals.tacticalsupplydrops")
@@ -156,8 +171,6 @@ namespace TacticalSupplyDrops.Client
 
                 _stashItems = stashResponse.items ??
                     new List<StashItem>();
-
-                _selectedItemIds.Clear();
 
                 SaveStashResponse(response);
 
@@ -223,10 +236,6 @@ namespace TacticalSupplyDrops.Client
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F10))
-            {
-                _windowOpen = !_windowOpen;
-            }
 
             if (ProcurementProfileRefresh.Initialize(out string error))
             {
@@ -242,9 +251,429 @@ namespace TacticalSupplyDrops.Client
 
             CheckForOrderRequest();
             CheckForProcurementPurchaseRequest();
+            CheckForProcurementCatalogRequest();
             CheckForOrderLookupRequest();
             CheckForStashRefreshRequest();
+            CheckForDeliveryDispatchRequest();
+
+            _tabletAccessRefreshTimer += Time.unscaledDeltaTime;
+            if (_tabletAccessRefreshTimer >= 1f)
+            {
+                _tabletAccessRefreshTimer = 0f;
+                UpdateTabletAccessState();
+            }
         }
+        private bool TryGetRaidPlayer(
+            out ClientGameWorld gameWorld,
+            out Player player)
+        {
+            gameWorld = null;
+            player = null;
+
+            try
+            {
+                if (!Singleton<GameWorld>.Instantiated)
+                {
+                    return false;
+                }
+
+                // Tarkov registers the active world under GameWorld, not its derived type.
+                gameWorld = Singleton<GameWorld>.Instance as ClientGameWorld;
+                player = gameWorld?.MainPlayer;
+                return gameWorld != null && player != null && player.IsYourPlayer;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug("[TSD] Raid player is not ready: " + ex.Message);
+                gameWorld = null;
+                player = null;
+                return false;
+            }
+        }
+
+        private bool HasFieldTerminal(Player player)
+        {
+            if (player?.Inventory?.AllRealPlayerItems == null)
+            {
+                return false;
+            }
+
+            foreach (Item item in player.Inventory.AllRealPlayerItems)
+            {
+                if (item != null && string.Equals(
+                    item.StringTemplateId,
+                    FieldTerminalTemplateId,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool HasFieldTerminalOutsideRaid()
+        {
+            // The terminal may still be equipped on the PMC while at the main menu.
+            // Tarkov registers this application under the generic base type.
+            if (Singleton<ClientApplication<IEftSession>>.Instantiated)
+            {
+                var session = Singleton<ClientApplication<IEftSession>>.Instance
+                    .GetClientBackEndSession();
+                var inventory = session?.Profile?.InventoryInfo;
+                if (inventory != null)
+                {
+                    foreach (Item item in inventory.AllRealPlayerItems)
+                    {
+                        if (item != null && string.Equals(
+                            item.StringTemplateId, FieldTerminalTemplateId,
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }
+
+            // Retain the stash fallback while the menu profile is still loading.
+            foreach (StashItem item in _stashItems)
+            {
+                if (item != null && string.Equals(
+                    item.TemplateId,
+                    FieldTerminalTemplateId,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void UpdateTabletAccessState()
+        {
+            try
+            {
+                bool inRaid = false;
+                bool hasTerminal = false;
+
+                try
+                {
+                    // Reuse the dispatch check so the display and delivery agree on raid state.
+                    inRaid = TryGetRaidPlayer(out _, out Player player);
+                    hasTerminal = inRaid
+                        ? HasFieldTerminal(player)
+                        : HasFieldTerminalOutsideRaid();
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogDebug(
+                        "[TSD] Could not read field terminal ownership: " +
+                        ex.Message);
+                }
+
+                Directory.CreateDirectory(OrderFolderPath);
+                string temporaryPath = TabletAccessPath + ".tmp";
+                File.WriteAllText(
+                    temporaryPath,
+                    JsonUtility.ToJson(new TabletAccessState
+                    {
+                        hasAccess = hasTerminal,
+                        inRaid = inRaid,
+                        updatedUtc = DateTime.UtcNow.ToString("o")
+                    }));
+
+                if (File.Exists(TabletAccessPath))
+                {
+                    File.Delete(TabletAccessPath);
+                }
+
+                File.Move(temporaryPath, TabletAccessPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(
+                    "[TSD] Could not refresh field terminal access state: " +
+                    ex.Message);
+            }
+        }
+
+        private void CheckForDeliveryDispatchRequest()
+        {
+            if (_deliveryDispatchInProgress ||
+                !File.Exists(DeliveryDispatchRequestPath))
+            {
+                return;
+            }
+
+            try
+            {
+                string requestJson =
+                    File.ReadAllText(DeliveryDispatchRequestPath);
+                File.Delete(DeliveryDispatchRequestPath);
+
+                DeliveryDispatchRequest request =
+                    JsonUtility.FromJson<DeliveryDispatchRequest>(requestJson);
+
+                if (request == null ||
+                    string.IsNullOrWhiteSpace(request.RequestId) ||
+                    string.IsNullOrWhiteSpace(request.OrderId))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        kind = "error",
+                        message = "INVALID DELIVERY REQUEST",
+                        completed = true
+                    });
+                    return;
+                }
+
+                StartCoroutine(ProcessDeliveryDispatch(request));
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(
+                    "[TSD] Could not read the delivery dispatch request: " + ex);
+            }
+        }
+
+        private IEnumerator ProcessDeliveryDispatch(
+            DeliveryDispatchRequest request)
+        {
+            _deliveryDispatchInProgress = true;
+            try
+            {
+                if (!TryGetRaidPlayer(out ClientGameWorld gameWorld, out Player player))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "error",
+                        message = "ENTER RAID BEFORE DISPATCHING CARGO",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                if (!HasFieldTerminal(player))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "error",
+                        message = "TSD FIELD TERMINAL NOT DETECTED",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                if (!File.Exists(CargoFilePath))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "error",
+                        message = "NO VERIFIED CARGO ORDER IS READY",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                CargoEnvelope cargoEnvelope = JsonUtility.FromJson<CargoEnvelope>(
+                    File.ReadAllText(CargoFilePath));
+                if (cargoEnvelope == null ||
+                    cargoEnvelope.cargo == null ||
+                    cargoEnvelope.cargo.container == null ||
+                    cargoEnvelope.cargo.container.Length == 0 ||
+                    !string.Equals(
+                        cargoEnvelope.orderId,
+                        request.OrderId,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "error",
+                        message = "CARGO MANIFEST COULD NOT BE VERIFIED",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                if (_dispatchedOrderIds.Contains(request.OrderId))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "success",
+                        message = "THIS ORDER HAS ALREADY BEEN DISPATCHED",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                string[] stages =
+                {
+                    "AUTHENTICATING FIELD TERMINAL",
+                    "READING SECURE CARGO MANIFEST",
+                    "TRIANGULATING GPS POSITION",
+                    "CALCULATING NEAREST SAFE DROP CORRIDOR",
+                    "ENCRYPTING DISPATCH PACKET"
+                };
+
+                for (int index = 0; index < stages.Length; index++)
+                {
+                    if (!TryGetRaidPlayer(out gameWorld, out player) ||
+                        !HasFieldTerminal(player))
+                    {
+                        WriteDeliveryStatus(new DeliveryDispatchStatus
+                        {
+                            requestId = request.RequestId,
+                            orderId = request.OrderId,
+                            kind = "error",
+                            sequence = index + 1,
+                            message = "FIELD TERMINAL LINK LOST",
+                            completed = true
+                        });
+                        yield break;
+                    }
+
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "stage",
+                        sequence = index + 1,
+                        message = stages[index]
+                    });
+
+                    yield return new WaitForSecondsRealtime(.62f);
+                }
+
+                if (!TryGetRaidPlayer(out gameWorld, out player) ||
+                    !HasFieldTerminal(player))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "error",
+                        sequence = stages.Length + 1,
+                        message = "FIELD TERMINAL LINK LOST",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                AirdropDustRecolor.BeginTsdDropPointCapture();
+                gameWorld.InitAirdrop(
+                    ActiveOrderCargoId,
+                    true,
+                    player.Position);
+
+                if (!AirdropDustRecolor.EndTsdDropPointCapture(
+                    out Vector3 selectedDropPoint))
+                {
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId,
+                        orderId = request.OrderId,
+                        kind = "error",
+                        sequence = stages.Length + 1,
+                        message = "NO SAFE AIRDROP POINT AVAILABLE HERE",
+                        completed = true
+                    });
+                    yield break;
+                }
+
+                _dispatchedOrderIds.Add(request.OrderId);
+                SaveDispatchedOrders();
+
+                Logger.LogInfo(
+                    "[TSD] Dispatched cargo order " + request.OrderId +
+                    " from player position " + player.Position +
+                    " to nearby airdrop point " + selectedDropPoint + ".");
+
+                WriteDeliveryStatus(new DeliveryDispatchStatus
+                {
+                    requestId = request.RequestId,
+                    orderId = request.OrderId,
+                    kind = "success",
+                    sequence = stages.Length + 1,
+                    message = "CARGO ON THE WAY",
+                    completed = true,
+                    dropPoint = selectedDropPoint.ToString()
+                });
+            }
+            finally
+            {
+                _deliveryDispatchInProgress = false;
+            }
+        }
+
+        private void WriteDeliveryStatus(DeliveryDispatchStatus status)
+        {
+            try
+            {
+                Directory.CreateDirectory(OrderFolderPath);
+                string temporaryPath = DeliveryDispatchStatusPath + ".tmp";
+                File.WriteAllText(temporaryPath, JsonUtility.ToJson(status));
+                if (File.Exists(DeliveryDispatchStatusPath))
+                {
+                    File.Delete(DeliveryDispatchStatusPath);
+                }
+                File.Move(temporaryPath, DeliveryDispatchStatusPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("[TSD] Could not save delivery status: " + ex);
+            }
+        }
+
+        private void LoadDispatchedOrders()
+        {
+            try
+            {
+                if (!File.Exists(DispatchedOrdersPath)) return;
+                string[] ids = JsonUtility.FromJson<DispatchedOrdersEnvelope>(
+                    File.ReadAllText(DispatchedOrdersPath))?.orderIds;
+                if (ids == null) return;
+                foreach (string id in ids)
+                {
+                    if (!string.IsNullOrWhiteSpace(id))
+                        _dispatchedOrderIds.Add(id);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("[TSD] Could not load dispatched order history: " + ex.Message);
+            }
+        }
+
+        private void SaveDispatchedOrders()
+        {
+            try
+            {
+                Directory.CreateDirectory(OrderFolderPath);
+                File.WriteAllText(
+                    DispatchedOrdersPath,
+                    JsonUtility.ToJson(new DispatchedOrdersEnvelope
+                    {
+                        orderIds = new List<string>(_dispatchedOrderIds).ToArray()
+                    }));
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("[TSD] Could not save dispatched order history: " + ex);
+            }
+        }
+
         private void CheckForOrderLookupRequest()
         {
             if (_orderLookupInProgress)
@@ -323,6 +752,45 @@ namespace TacticalSupplyDrops.Client
                     ex);
             }
         }
+        private void CheckForProcurementCatalogRequest()
+        {
+            string path = Path.Combine(OrderFolderPath, "procurement-catalog-request.json");
+            if (_procurementCatalogInProgress || !File.Exists(path)) return;
+            try
+            {
+                string json = File.ReadAllText(path);
+                File.Delete(path);
+                _ = RefreshProcurementCatalogAsync(json);
+            }
+            catch (Exception ex) { Logger.LogWarning("TSD catalog request could not be read: " + ex.Message); }
+        }
+
+        private async Task RefreshProcurementCatalogAsync(string request)
+        {
+            _procurementCatalogInProgress = true;
+            string response;
+            try
+            {
+                response = await RequestHandler.PostJsonAsync("/client/tactical-supply-drops/trader-catalog", request);
+                Newtonsoft.Json.Linq.JObject.Parse(response);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("TSD trader catalog failed: " + ex.Message);
+                response = "{\"success\":false,\"message\":\"Trader stock is unavailable. Try refresh.\"}";
+            }
+            try
+            {
+                Directory.CreateDirectory(OrderFolderPath);
+                string path = Path.Combine(OrderFolderPath, "procurement-catalog-response.json");
+                File.WriteAllText(path + ".tmp", response);
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(path + ".tmp", path);
+            }
+            catch (Exception ex) { Logger.LogWarning("TSD catalog response could not be saved: " + ex.Message); }
+            finally { _procurementCatalogInProgress = false; }
+        }
+
         private void CheckForProcurementPurchaseRequest()
         {
             if (_procurementPurchaseInProgress)
@@ -680,248 +1148,62 @@ namespace TacticalSupplyDrops.Client
         }
 
         [Serializable]
+        private class TabletAccessState
+        {
+            public bool hasAccess;
+            public bool inRaid;
+            public string updatedUtc;
+        }
+
+        [Serializable]
+        private class DeliveryDispatchRequest
+        {
+            public string RequestId;
+            public string OrderId;
+        }
+
+        [Serializable]
+        private class DeliveryDispatchStatus
+        {
+            public string requestId;
+            public string orderId;
+            public string kind;
+            public int sequence;
+            public string message;
+            public bool completed;
+            public string dropPoint;
+        }
+
+        [Serializable]
+        private class CargoEnvelope
+        {
+            public string orderId;
+            public CargoPayload cargo;
+        }
+
+        [Serializable]
+        private class CargoPayload
+        {
+            public CargoItem[] container;
+        }
+
+        [Serializable]
+        private class CargoItem
+        {
+            public string _id;
+            public string _tpl;
+        }
+
+        [Serializable]
+        private class DispatchedOrdersEnvelope
+        {
+            public string[] orderIds;
+        }
+
+        [Serializable]
         private class OrderRequestInfo
         {
             public string RequestId;
-        }
-        private void OnGUI()
-        {
-            if (!_windowOpen)
-            {
-                return;
-            }
-
-            CreateStyles();
-
-            _windowRect = GUILayout.Window(
-                123456,
-                _windowRect,
-                DrawSupplyDropWindow,
-                "TACTICAL SUPPLY DROPS");
-
-            Event currentEvent = Event.current;
-
-            if (currentEvent != null &&
-                _windowRect.Contains(currentEvent.mousePosition))
-            {
-                if (currentEvent.type == EventType.MouseDown ||
-                    currentEvent.type == EventType.MouseUp ||
-                    currentEvent.type == EventType.MouseDrag ||
-                    currentEvent.type == EventType.ScrollWheel)
-                {
-                    currentEvent.Use();
-                }
-            }
-        }
-
-        private void CreateStyles()
-        {
-            if (_titleStyle != null)
-            {
-                return;
-            }
-
-            _titleStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 24,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleCenter
-            };
-
-            _sectionStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 18,
-                fontStyle = FontStyle.Bold
-            };
-
-            _itemNameStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 17,
-                fontStyle = FontStyle.Bold
-            };
-
-            _itemDetailsStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 14
-            };
-        }
-
-        private void DrawSupplyDropWindow(int windowId)
-        {
-            GUILayout.Space(10);
-
-            GUILayout.Label(
-                "TACTICAL SUPPLY DROPS",
-                _titleStyle);
-
-            GUILayout.Label(
-                "Select items from your stash for delivery.",
-                _itemDetailsStyle);
-
-            GUILayout.Space(10);
-
-            GUILayout.Label(
-                "Connection: " + _statusMessage,
-                _itemDetailsStyle);
-
-            GUILayout.Space(15);
-
-            GUILayout.BeginHorizontal();
-
-            GUILayout.Label(
-                "AVAILABLE STASH ITEMS (" +
-                _stashItems.Count + ")",
-                _sectionStyle);
-
-            GUILayout.FlexibleSpace();
-
-            GUILayout.Label(
-                "SELECTED: " + _selectedItemIds.Count,
-                _sectionStyle);
-
-            GUILayout.EndHorizontal();
-
-            GUILayout.Space(8);
-
-            GUILayout.BeginHorizontal();
-
-            GUILayout.Label(
-                "SEARCH:",
-                _itemDetailsStyle,
-                GUILayout.Width(65));
-
-            _searchText = GUILayout.TextField(
-                _searchText ?? "",
-                GUILayout.Height(30));
-
-            if (GUILayout.Button(
-                "Clear Search",
-                GUILayout.Width(110),
-                GUILayout.Height(30)))
-            {
-                _searchText = "";
-            }
-
-            GUILayout.EndHorizontal();
-
-            List<StashItem> visibleItems = _stashItems
-                .Where(item => item != null)
-                .Where(item =>
-                    string.IsNullOrWhiteSpace(_searchText) ||
-                    (!string.IsNullOrEmpty(item.Name) &&
-                     item.Name.IndexOf(
-                         _searchText,
-                         StringComparison.OrdinalIgnoreCase) >= 0) ||
-                    (!string.IsNullOrEmpty(item.TemplateId) &&
-                     item.TemplateId.IndexOf(
-                         _searchText,
-                         StringComparison.OrdinalIgnoreCase) >= 0))
-                .OrderBy(
-                    item => item.Name ?? "",
-                    StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            GUILayout.Space(8);
-
-            GUILayout.Label(
-                "MATCHING ITEMS: " + visibleItems.Count,
-                _itemDetailsStyle);
-
-            _scrollPosition = GUILayout.BeginScrollView(
-                _scrollPosition,
-                GUILayout.Height(390));
-
-            if (visibleItems.Count == 0)
-            {
-                GUILayout.Label(
-                    "No matching items found.",
-                    _itemDetailsStyle);
-            }
-
-            foreach (StashItem item in visibleItems)
-            {
-                GUILayout.BeginHorizontal("box");
-
-                bool hasId = !string.IsNullOrEmpty(item.Id);
-
-                bool selected = hasId &&
-                    _selectedItemIds.Contains(item.Id);
-
-                GUI.enabled = hasId;
-
-                bool newSelected = GUILayout.Toggle(
-                    selected,
-                    "",
-                    GUILayout.Width(30),
-                    GUILayout.Height(45));
-
-                GUI.enabled = true;
-
-                if (hasId && newSelected != selected)
-                {
-                    if (newSelected)
-                    {
-                        _selectedItemIds.Add(item.Id);
-                    }
-                    else
-                    {
-                        _selectedItemIds.Remove(item.Id);
-                    }
-                }
-
-                GUILayout.BeginVertical();
-
-                string displayName =
-                    string.IsNullOrEmpty(item.Name)
-                        ? "(Item name not received)"
-                        : item.Name;
-
-                GUILayout.Label(
-                    displayName,
-                    _itemNameStyle);
-
-                GUILayout.Label(
-                    "Quantity: " + item.StackCount +
-                    "     Base value: " + item.BaseValue +
-                    " roubles",
-                    _itemDetailsStyle);
-
-                GUILayout.EndVertical();
-
-                GUILayout.EndHorizontal();
-            }
-
-            GUILayout.EndScrollView();
-
-            GUILayout.Space(10);
-
-            GUILayout.BeginHorizontal();
-
-            if (GUILayout.Button(
-                "Refresh Stash Data",
-                GUILayout.Height(45)))
-            {
-                _ = RequestStashData();
-            }
-
-            if (GUILayout.Button(
-                "Clear Selection",
-                GUILayout.Height(45)))
-            {
-                _selectedItemIds.Clear();
-            }
-
-            if (GUILayout.Button(
-                "Close",
-                GUILayout.Height(45)))
-            {
-                _windowOpen = false;
-            }
-
-            GUILayout.EndHorizontal();
-
-            GUI.DragWindow(
-                new Rect(0, 0, 10000, 30));
         }
     }
 }

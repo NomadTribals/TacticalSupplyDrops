@@ -1,7 +1,9 @@
-﻿
+
 using BepInEx;
+using BepInEx.Configuration;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using UnityEngine;
 using WebOverlay;
@@ -32,77 +34,187 @@ namespace TacticalSupplyDrops.Overlay
         public string Category;
     }
 
+    [Serializable]
+    public class TabletWindowGesture
+    {
+        public string mode;
+        public string corner;
+        public int dx;
+        public int dy;
+    }
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops.overlay",
     "nomadtribals-TacticalSupplyDropsOverlay",
-    "1.0.1")]
+    "2.0.0")]
     [BepInDependency("com.anvil.weboverlay", "1.11.0")]
     public class TacticalSupplyDropsOverlayPlugin : BaseUnityPlugin
     {
         private IWebOverlay overlay;
+        private ConfigEntry<KeyCode> tabletToggleKey;
+        private bool isCapturingTabletToggleKey;
+        private float suppressTabletToggleUntil;
+        private bool isOverlayVisible;
+        private ConfigEntry<int> tabletWindowX;
+        private ConfigEntry<int> tabletWindowY;
+        private ConfigEntry<int> tabletWindowWidth;
+        private ConfigEntry<int> tabletWindowHeight;
+        private int currentWindowX;
+        private int currentWindowY;
+        private int currentWindowWidth = 1200;
+        private int currentWindowHeight = 800;
 
-        private const string StashFilePath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\stash.json";
-        private const string StashRefreshCompletePath =
-    @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\stash-refresh-complete.json";
-        private const string StashRefreshRequestPath =
-    @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\stash-refresh-request.json";
-        private const string OrderLookupRequestPath =
-    @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\order-lookup-request.json";
-        private const string OrderFolderPath =
-    @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops";
+        private static readonly string ProcurementCatalogRequestPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "procurement-catalog-request.json");
+        private static readonly string ProcurementCatalogResponsePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "procurement-catalog-response.json");
 
-        private const string OrderRequestPath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\order-request.json";
+        private static readonly string StashFilePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "stash.json");
+        private static readonly string StashRefreshCompletePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "stash-refresh-complete.json");
+        private static readonly string StashRefreshRequestPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "stash-refresh-request.json");
+        private static readonly string OrderLookupRequestPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "order-lookup-request.json");
+        private static readonly string OrderFolderPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops");
 
-        private const string OrderResponsePath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\order-response.json";
+        private static readonly string TabletAccessPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "tablet-access.json");
 
-        private const string ProcurementPurchaseRequestPath =
-    @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\procurement-purchase-request.json";
+        private static readonly string DeliveryDispatchRequestPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "delivery-dispatch-request.json");
 
-        private const string ProcurementPurchaseResponsePath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\procurement-purchase-response.json";
+        private static readonly string DeliveryDispatchStatusPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "delivery-dispatch-status.json");
+
+        private static readonly string OrderLookupResponsePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "order-lookup-response.json");
+
+        private static readonly string CargoFilePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "cargo.json");
+
+        private static readonly string OrderRequestPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "order-request.json");
+
+        private static readonly string OrderResponsePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "order-response.json");
+
+        private static readonly string ProcurementPurchaseRequestPath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "procurement-purchase-request.json");
+
+        private static readonly string ProcurementPurchaseResponsePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "procurement-purchase-response.json");
         private void Awake()
         {
-            Logger.LogInfo("Tactical Supply Drops Overlay loaded!");
+            tabletToggleKey = Config.Bind("Controls", "TabletToggleKey", KeyCode.F9, "Key used to open or close the Tactical Supply Drops tablet.");            tabletWindowX = Config.Bind("Window", "X", -1, "Tablet window horizontal position in screen pixels.");
+            tabletWindowY = Config.Bind("Window", "Y", -1, "Tablet window vertical position in screen pixels.");
+            tabletWindowWidth = Config.Bind("Window", "Width", 1200, "Tablet window width in screen pixels.");
+            tabletWindowHeight = Config.Bind("Window", "Height", 800, "Tablet window height in screen pixels.");
+            Logger.LogInfo("Tactical Supply Drops Overlay loaded! Tablet hotkey: " + tabletToggleKey.Value);
         }
 
         private float responseCheckTimer = 0f;
+        private string lastDeliveryStatusJson = string.Empty;
+        private string lastTabletAccessJson = string.Empty;
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F9))
+            if (!isCapturingTabletToggleKey && Time.unscaledTime >= suppressTabletToggleUntil && Input.GetKeyDown(tabletToggleKey.Value))
             {
                 ToggleOverlay();
             }
 
             responseCheckTimer += Time.deltaTime;
 
-            if (responseCheckTimer >= 1f)
+            if (responseCheckTimer >= 0.25f)
             {
                 responseCheckTimer = 0f;
                 CheckOrderResponse();
                 CheckProcurementPurchaseResponse();
+                CheckProcurementCatalogResponse();
                 CheckForStashRefreshComplete();
+                CheckForOrderLookupComplete();
+                CheckDeliveryDispatchStatus();
+                CheckTabletAccessState();
             }
         }
 
+
+        private int ClampWindowValue(int value, int minimum, int maximum)
+        {
+            if (maximum < minimum) maximum = minimum;
+            return Math.Max(minimum, Math.Min(maximum, value));
+        }
+
+        private void HandleWindowGesture(IWebOverlay target, string payload)
+        {
+            try
+            {
+                TabletWindowGesture gesture = JsonUtility.FromJson<TabletWindowGesture>(payload);
+                if (gesture == null) return;
+                if (gesture.mode == "end") { Config.Save(); return; }
+                int maxWidth = Math.Max(1000, Screen.width);
+                int maxHeight = Math.Max(650, Screen.height);
+                if (gesture.mode == "move")
+                {
+                    currentWindowX = ClampWindowValue(currentWindowX + gesture.dx, 0, Math.Max(0, Screen.width - currentWindowWidth));
+                    currentWindowY = ClampWindowValue(currentWindowY + gesture.dy, 0, Math.Max(0, Screen.height - currentWindowHeight));
+                }
+                else if (gesture.mode == "resize")
+                {
+                    bool fromLeft = gesture.corner == "tl" || gesture.corner == "bl";
+                    bool fromTop = gesture.corner == "tl" || gesture.corner == "tr";
+                    int oldWidth = currentWindowWidth, oldHeight = currentWindowHeight;
+                    currentWindowWidth = ClampWindowValue(currentWindowWidth + (fromLeft ? -gesture.dx : gesture.dx), 1000, maxWidth);
+                    currentWindowHeight = ClampWindowValue(currentWindowHeight + (fromTop ? -gesture.dy : gesture.dy), 650, maxHeight);
+                    if (fromLeft) currentWindowX += oldWidth - currentWindowWidth;
+                    if (fromTop) currentWindowY += oldHeight - currentWindowHeight;
+                    currentWindowX = ClampWindowValue(currentWindowX, 0, Math.Max(0, Screen.width - currentWindowWidth));
+                    currentWindowY = ClampWindowValue(currentWindowY, 0, Math.Max(0, Screen.height - currentWindowHeight));
+                }
+                else return;
+                target.SetBounds(currentWindowX, currentWindowY, currentWindowWidth, currentWindowHeight);
+                tabletWindowX.Value = currentWindowX; tabletWindowY.Value = currentWindowY;
+                tabletWindowWidth.Value = currentWindowWidth; tabletWindowHeight.Value = currentWindowHeight;
+            }
+            catch (Exception exception) { Logger.LogWarning("Could not apply tablet window gesture: " + exception.Message); }
+        }
         private void ToggleOverlay()
         {
-            if (overlay != null)
+            if (!isOverlayVisible && !HasFreshTabletAccess(out _))
             {
-                overlay.Toggle();
-                SendStashData();
+                Logger.LogWarning(
+                    "TSD tablet open denied: carry the TSD Field Terminal " +
+                    "to establish a secure connection.");
                 return;
             }
 
+            if (overlay != null)
+            {
+                if (isOverlayVisible)
+                {
+                    overlay.ExecuteScript("window.overlay.beginTabletShutdown && window.overlay.beginTabletShutdown();");
+                }
+                else
+                {
+                    overlay.Show();
+                    isOverlayVisible = true;
+                    Directory.CreateDirectory(OrderFolderPath);
+                    File.WriteAllText(StashRefreshRequestPath, "refresh");
+                    overlay.ExecuteScript("window.overlay.setTabletVisible && window.overlay.setTabletVisible(true);");
+                }
+                SendStashData();
+                return;
+            }
             overlay = WebOverlays.Create(
                 "Tactical Supply Drops",
                 new OverlayOptions
                 {
-                    Width = 1200,
-                    Height = 800,
+                    Width = tabletWindowWidth.Value,
+                    Height = tabletWindowHeight.Value,
+                    Frame = false,
+                    RememberBounds = false,
                     FreeCursorWhileShown = true,
                     ClickThroughWhenUnfocused = true,
                     DispatchOnMainThread = true
@@ -115,15 +227,65 @@ namespace TacticalSupplyDrops.Overlay
                 return;
             }
 
+            isOverlayVisible = true;
+                    Directory.CreateDirectory(OrderFolderPath);
+                    File.WriteAllText(StashRefreshRequestPath, "refresh");
+
+            currentWindowWidth = ClampWindowValue(tabletWindowWidth.Value, 1000, Math.Max(1000, Screen.width));
+            currentWindowHeight = ClampWindowValue(tabletWindowHeight.Value, 650, Math.Max(650, Screen.height));
+            currentWindowX = tabletWindowX.Value < 0 ? Math.Max(0, (Screen.width - currentWindowWidth) / 2) : ClampWindowValue(tabletWindowX.Value, 0, Math.Max(0, Screen.width - currentWindowWidth));
+            currentWindowY = tabletWindowY.Value < 0 ? Math.Max(0, (Screen.height - currentWindowHeight) / 2) : ClampWindowValue(tabletWindowY.Value, 0, Math.Max(0, Screen.height - currentWindowHeight));
+            overlay.SetBounds(currentWindowX, currentWindowY, currentWindowWidth, currentWindowHeight);
             IWebOverlay created = overlay;
 
             // Receive messages sent from the F9 JavaScript interface.
             created.ChannelMessage += (channel, payload) =>
             {
                 Logger.LogInfo(
-                    "TSD DEBUG: Received F9 message channel: " + channel);
+                    "TSD overlay received channel: " + channel);
 
-                if (channel == "tsd-test")
+                if (channel == "tsd-window-gesture")
+                {
+                    HandleWindowGesture(created, payload);
+                    return;
+                }
+                else if (channel == "tsd-hotkey-capture")
+                {
+                    isCapturingTabletToggleKey = true;
+                    return;
+                }
+                else if (channel == "tsd-hotkey-cancel")
+                {
+                    isCapturingTabletToggleKey = false;
+                    suppressTabletToggleUntil = Time.unscaledTime + 0.25f;
+                    return;
+                }
+                else if (channel == "tsd-hotkey-set")
+                {
+                    isCapturingTabletToggleKey = false;
+                    KeyCode requestedKey;
+                    if (Enum.TryParse(payload, true, out requestedKey) && requestedKey != KeyCode.None && Enum.IsDefined(typeof(KeyCode), requestedKey))
+                    {
+                        tabletToggleKey.Value = requestedKey;
+                        Config.Save();
+                        suppressTabletToggleUntil = Time.unscaledTime + 0.35f;
+                        Logger.LogInfo("TSD tablet hotkey saved: " + requestedKey);
+                        created.ExecuteScript("window.overlay.onTabletHotkeySaved && window.overlay.onTabletHotkeySaved('" + requestedKey + "');");
+                    }
+                    else
+                    {
+                        created.ExecuteScript("window.overlay.onTabletHotkeyError && window.overlay.onTabletHotkeyError();");
+                    }
+                    return;
+                }
+                else if (channel == "tsd-power")
+                {
+                    Logger.LogInfo("TSD tablet power button requested hide.");
+                    created.Hide();
+                    isOverlayVisible = false;
+                    created.ExecuteScript("window.overlay.setTabletVisible && window.overlay.setTabletVisible(false);");
+                }
+                else if (channel == "tsd-test")
                 {
                     Logger.LogInfo(
                         "TSD F9 communication test received: " + payload);
@@ -141,12 +303,21 @@ namespace TacticalSupplyDrops.Overlay
 
                     SaveOrderRequest(payload);
                 }
-                else if (channel == "tsd-purchase-cartridges")
+                else if (channel == "tsd-dispatch-delivery")
+                {
+                    SaveDeliveryDispatchRequest(payload);
+                }
+                else if (channel == "tsd-procurement-purchase")
                 {
                     Logger.LogInfo(
                         "TSD F9 procurement purchase request received.");
 
                     SaveProcurementPurchaseRequest(payload);
+                }
+                else if (channel == "tsd-procurement-refresh")
+                {
+                    Directory.CreateDirectory(OrderFolderPath);
+                    File.WriteAllText(ProcurementCatalogRequestPath, payload);
                 }
                 else if (channel == "tsd-refresh-stash")
                 {
@@ -200,6 +371,12 @@ namespace TacticalSupplyDrops.Overlay
                     Logger.LogInfo(
                         "TSD F9 page is ready. Sending stash data.");
 
+                    created.ExecuteScript("window.overlay.onTabletHotkeyLoaded && window.overlay.onTabletHotkeyLoaded('" + tabletToggleKey.Value + "');");
+
+                    created.ExecuteScript("window.overlay.setTabletVisible && window.overlay.setTabletVisible(true);");
+                    SendTabletAccessState();
+                    SendActiveCargo();
+                    CheckDeliveryDispatchStatus();
                     SendStashData();
                 }
             };
@@ -403,6 +580,34 @@ namespace TacticalSupplyDrops.Overlay
 .view-panel.hidden {
     display: none;
 }
+.delivery-console {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr);
+    gap: 18px;
+    padding: 22px;
+    background: linear-gradient(145deg, #1a2022, #101517 70%);
+    border: 1px solid #3a4140;
+    border-top: 2px solid #92703a;
+    box-shadow: inset 0 1px rgba(255,255,255,.035), 0 12px 28px rgba(0,0,0,.38);
+}
+.delivery-console-title { color: #d5d0c5; font-size: 15px; font-weight: 900; letter-spacing: 2px; }
+.delivery-console-subtitle { margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.delivery-cargo-card { padding: 16px; background: #0c1113; border: 1px solid #343b3b; }
+.delivery-cargo-label, .delivery-sequence-label { color: #9a8a68; font-size: 9px; font-weight: 800; letter-spacing: 1.8px; }
+.delivery-cargo-value { margin-top: 8px; color: #e1ddd2; font-size: 13px; font-weight: 800; }
+.delivery-sequence { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.delivery-sequence li { display: flex; align-items: center; gap: 10px; min-height: 29px; padding: 6px 9px; color: #687174; background: rgba(0,0,0,.2); border-left: 2px solid #343b3b; font-size: 9px; letter-spacing: 1px; }
+.delivery-sequence li::before { content: '—'; color: #687174; }
+.delivery-sequence li.active { color: #e1c17e; border-left-color: #d18b35; }
+.delivery-sequence li.active::before { content: '›'; color: #f2a33c; }
+.delivery-sequence li.complete { color: #b3baaa; border-left-color: #657451; }
+.delivery-sequence li.complete::before { content: '✓'; color: #a0b276; }
+.delivery-action { display: flex; flex-direction: column; gap: 12px; }
+.delivery-link-status { padding: 12px; color: #9ca4a2; background: #0b1012; border: 1px solid #323a3b; font-size: 9px; font-weight: 800; letter-spacing: 1px; }
+.delivery-link-status.connected { color: #d0b47a; border-color: #735d37; }
+.delivery-help { color: #778080; font-size: 9px; line-height: 1.7; }
+.delivery-action .purchase-button:disabled { opacity: .45; cursor: default; }
+@media (max-width: 900px) { .delivery-console { grid-template-columns: 1fr; } }
  .procurement-product {
     display: flex;
     justify-content: space-between;
@@ -1484,11 +1689,713 @@ namespace TacticalSupplyDrops.Overlay
             .classification { display: none; }
         }
 
-    </style>
+
+        /* TSD FIELD TABLET // PHYSICAL HARDWARE PASS */
+        body {
+    padding: 22px;
+    background:
+        radial-gradient(ellipse at 50% 42%, rgba(91,101,105,.23), transparent 60%),
+        linear-gradient(145deg, #07090b 0%, #1a2023 48%, #060809 100%);
+}
+
+        .app {
+    position: relative;
+    isolation: isolate;
+    width: 100%;
+    height: 100%;
+    padding: 17px 19px 13px;
+    gap: 12px;
+    overflow: hidden;
+
+    /* Thick protective outer bezel */
+    border: 13px solid #292f32;
+    border-radius: 25px;
+
+    /* Dark graphite display housing */
+    background:
+        /* Faint, uneven edge wear and field scuffs in the painted housing */
+        linear-gradient(112deg, transparent 0 7.1%, rgba(183,168,139,.10) 7.16%, transparent 7.28%),
+        linear-gradient(164deg, transparent 0 91.8%, rgba(176,163,137,.075) 91.9%, transparent 92.04%),
+        linear-gradient(76deg, transparent 0 96.4%, rgba(210,199,176,.06) 96.48%, transparent 96.58%),
+        /* Low, soft reflection across the protective glass */
+        linear-gradient(124deg, rgba(210,218,211,.055) 0%, rgba(210,218,211,.018) 13%, transparent 27%),
+        radial-gradient(ellipse at 50% 0%, rgba(160,176,177,.07), transparent 56%),
+        linear-gradient(180deg, #12191c 0%, #0a0f12 100%);
+
+    /* Layered 3D chassis depth */
+    box-shadow:
+        0 0 0 1px #050708,
+        0 0 0 2px #080b0d,
+        0 0 0 4px #596164,
+        0 0 0 5px #171c1e,
+        0 0 0 7px #080a0b,
+        0 22px 48px rgba(0,0,0,.82),
+        0 8px 15px rgba(0,0,0,.75),
+        inset 0 2px 3px rgba(255,255,255,.19),
+        inset 0 0 0 1px rgba(255,255,255,.035),
+        inset 0 -6px 13px rgba(0,0,0,.82);
+}
+
+        /* Recessed metal chassis fasteners */
+.app::before {
+    content: '';
+    position: absolute;
+    z-index: 30;
+    inset: -13px;
+    pointer-events: none;
+
+    background:
+        radial-gradient(circle at 13px 13px,
+            #080a0b 0 2px,
+            #a0a5a3 2.5px 3.5px,
+            #41484a 4px 6px,
+            #171c1e 6.5px 8px,
+            transparent 8.5px),
+
+        radial-gradient(circle at calc(100% - 13px) 13px,
+            #080a0b 0 2px,
+            #a0a5a3 2.5px 3.5px,
+            #41484a 4px 6px,
+            #171c1e 6.5px 8px,
+            transparent 8.5px),
+
+        radial-gradient(circle at 13px calc(100% - 13px),
+            #080a0b 0 2px,
+            #a0a5a3 2.5px 3.5px,
+            #41484a 4px 6px,
+            #171c1e 6.5px 8px,
+            transparent 8.5px),
+
+        radial-gradient(circle at calc(100% - 13px) calc(100% - 13px),
+            #080a0b 0 2px,
+            #a0a5a3 2.5px 3.5px,
+            #41484a 4px 6px,
+            #171c1e 6.5px 8px,
+            transparent 8.5px);
+
+    opacity: .95;
+}
+
+       /* Raised side control with machined metallic edges */
+.app::after {
+    content: '';
+    position: absolute;
+    z-index: 29;
+    top: 25%;
+    right: -13px;
+    width: 5px;
+    height: 108px;
+    border-radius: 2px 0 0 2px;
+
+    background:
+        linear-gradient(
+            90deg,
+            #080a0b,
+            #858d8e 42%,
+            #343b3d 76%,
+            #171b1d
+        );
+
+    box-shadow:
+        0 0 0 1px rgba(0,0,0,.9),
+        0 2px 5px rgba(0,0,0,.85),
+        inset 0 1px 0 rgba(255,255,255,.18);
+
+    pointer-events: none;
+}
+
+       .header {
+    border-radius: 5px;
+
+            .glass-reflection {
+            position: absolute;
+            z-index: 26;
+            inset: 13px;
+            border-radius: 11px;
+            pointer-events: none;
+            background-image:
+                linear-gradient(126deg, rgba(220,228,218,.16) 0%, rgba(220,228,218,.06) 9%, transparent 26%),
+                linear-gradient(180deg, rgba(255,255,255,.055), transparent 14%),
+                linear-gradient(125deg, transparent 42%, rgba(222,229,219,.22) 47%, rgba(222,229,219,.05) 49%, transparent 53%);
+            background-size: 100% 100%, 100% 100%, 28px 2px;
+            background-position: 0 0, 0 0, 78% 23%;
+            background-repeat: no-repeat;
+            box-shadow: inset 0 1px 1px rgba(255,255,255,.16), inset 0 -1px 2px rgba(0,0,0,.42);
+        }
+
+        .housing-wear {
+            position: absolute;
+            z-index: 28;
+            inset: -13px;
+            border-radius: 25px;
+            pointer-events: none;
+            background-image:
+                radial-gradient(ellipse at center,rgba(150,139,112,.16) 0%,rgba(18,18,16,.20) 28%,transparent 72%),
+                radial-gradient(ellipse at center,rgba(133,126,108,.12) 0%,rgba(12,14,14,.18) 32%,transparent 74%),
+                linear-gradient(180deg,transparent 0 4px,rgba(0,0,0,.16) 5px,transparent 8px);
+            background-size: 36px 11px, 30px 10px, 100% 12px;
+            background-position: 18% 5px, 78% calc(100% - 5px), 0 0;
+            background-repeat: no-repeat;
+        }
+/* Recessed display lighting and depth */
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.14),
+        inset 0 -3px 8px rgba(0,0,0,.48),
+        0 5px 12px rgba(0,0,0,.48),
+        0 1px 2px rgba(0,0,0,.6);
+}
+
+        .main-navigation {
+            border: 1px solid #343c3f;
+            border-radius: 4px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.055), 0 3px 8px rgba(0,0,0,.34);
+        }
+
+        .main-nav-button {
+            position: relative;
+            text-shadow: 0 1px 2px #000;
+        }
+
+        .main-nav-button.active {
+            box-shadow:
+                inset 0 2px 0 rgba(255,255,255,.07),
+                inset 0 -3px 8px rgba(0,0,0,.22),
+                0 1px 5px rgba(0,0,0,.3);
+        }
+
+        .section-heading,
+        .inventory-panel,
+        .manifest-panel,
+        .procurement-product,
+        .upcoming-panel {
+            border-radius: 4px;
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,.055),
+                inset 0 -2px 5px rgba(0,0,0,.22),
+                0 5px 13px rgba(0,0,0,.28);
+        }
+
+        .item-card {
+            border-radius: 3px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 2px 5px rgba(0,0,0,.22);
+            transition: transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+        }
+
+        .item-card:hover {
+            transform: translateY(-2px);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 5px 11px rgba(0,0,0,.38);
+        }
+
+        button, input, select {
+            transition: box-shadow .14s ease, border-color .14s ease, background-color .14s ease;
+        }
+
+        button:active:not(:disabled) {
+            filter: brightness(.88);
+            transform: translateY(1px);
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--orange) !important;
+            box-shadow: 0 0 0 2px rgba(224,164,59,.13), 0 0 12px rgba(224,164,59,.10);
+        }
+
+        .footer {
+            text-shadow: 0 1px 2px #000;
+        }
+
+        @media (max-width: 900px) {
+            body { padding: 10px; }
+            .app {
+                border-width: 8px;
+                border-radius: 17px;
+                padding: 12px;
+            }
+            .app::before { inset: -8px; }
+            .app::after { right: -8px; }
+        }
+
+    .rouble-wallet {margin-top:8px;color:#e2c28b;font-size:12px;font-weight:800;letter-spacing:1px;}
+.rouble-wallet span {display:inline-block;margin-right:14px;}
+.rouble-wallet small {font-size:8px;color:#929a96;margin-right:8px;}
+.procurement-traders {display:flex;gap:7px;overflow-x:auto;padding:0 0 12px;flex-shrink:0;}
+.procurement-trader {min-width:95px;flex:0 0 auto;padding:11px 16px;background:#111719;border:1px solid #39403d;color:#c0c5bf;font-size:11px;font-weight:800;cursor:pointer;}
+.procurement-trader small {display:block;margin-top:5px;font-size:8px;color:#929b94;}
+.procurement-trader.active {border-color:#b18a48;background:#2b281e;color:#e8c990;}
+.procurement-toolbar {display:flex;gap:8px;flex-wrap:wrap;}
+#procurement-search {flex:1;min-width:180px;background:#0c1112;color:#ddd;border:1px solid #3b4542;padding:10px;}
+.procurement-note {padding:12px 16px;color:#aeb4ac;font-size:11px;line-height:1.6;border-bottom:1px solid #2c3431;}
+.procurement-offers {display:flex;flex-direction:column;}
+.procurement-offer {display:grid;grid-template-columns:64px minmax(150px,1fr) minmax(190px,260px);gap:15px;align-items:center;padding:16px;border-bottom:1px solid #2d3532;}
+.procurement-offer-icon {width:60px;height:60px;object-fit:contain;background:#1a201e;border:1px solid #353e36;}
+.procurement-offer-info {min-width:0;}.procurement-offer-meta {font-size:9px;color:#a0aba1;margin:7px 0;}
+.procurement-scheme {max-width:100%;padding:8px;background:#101617;color:#dbc69d;border:1px solid #424a40;font-size:10px;}
+.procurement-offer-controls {display:grid;grid-template-columns:66px 1fr;gap:8px;align-items:center;}
+.procurement-quantity {width:66px;box-sizing:border-box;background:#0b1112;color:#ddd;padding:9px;border:1px solid #465043;}
+.procurement-offer-total {font-size:10px;line-height:1.5;color:#d5b67f;overflow-wrap:anywhere;}
+.procurement-offer-controls .purchase-button {grid-column:1/-1;}
+.procurement-empty {padding:28px;color:#acb4ab;font-size:12px;line-height:1.7;}
+.procurement-pagination {display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:15px;color:#b9beaf;font-size:10px;}
+.procurement-pagination button {padding:8px;background:#1a211e;border:1px solid #4a5345;color:#d1c6ac;cursor:pointer;}
+.procurement-pagination button:disabled,.purchase-button:disabled {opacity:.42;cursor:default;}
+@media(max-width:1000px){.procurement-offer{grid-template-columns:48px minmax(120px,1fr) 190px;gap:10px;}.procurement-offer-icon{width:46px;height:46px;}}
+
+</style>
+        <style>
+        /* TSD field tablet: machined graphite housing, recessed glass and guarded controls */
+        body { padding: 0; background: #080a0c; }
+        .app {
+            position: relative;
+            isolation: isolate;
+            overflow: visible;
+            width: 100%;
+            height: 100%;
+            padding: 16px 18px 13px;
+            gap: 12px;
+            border: 40px solid transparent;
+            border-image: linear-gradient(145deg,#454c4e 0%,#303638 12%,#22282a 31%,#191e20 52%,#2b3133 75%,#171c1e 100%) 1;
+            border-radius: 0;
+            background:
+                linear-gradient(180deg,rgba(224,164,59,.045),transparent 7%),
+                linear-gradient(180deg,#171b1d 0%,#090d0f 100%);
+            box-shadow:
+                inset 0 0 0 2px #0b0e10,
+                inset 0 0 0 6px rgba(83,91,94,.9),
+                inset 0 3px 5px rgba(237,239,233,.2),
+                inset 0 -12px 20px rgba(0,0,0,.96),
+                0 0 0 2px #050607;
+        }
+        /* Continuous raised rim on the outside edge of the housing. */
+        .app::before {
+            content: '';
+            position: absolute;
+            z-index: 24;
+            inset: -40px;
+            border: 1px solid rgba(7,9,10,.95);
+            box-shadow: inset 0 0 0 2px rgba(120,127,128,.29), inset 0 0 0 5px rgba(11,14,15,.88);
+            pointer-events: none;
+        }
+        /* Fine matte graphite grain, clipped to the housing bezel. */
+        .bezel-grain {
+            position: absolute;
+            z-index: 30;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            opacity: .62;
+            mix-blend-mode: soft-light;
+            pointer-events: none;
+        }
+        /* Side rail with raised grip grooves. */
+        .app::after {
+            content: '';
+            position: absolute;
+            z-index: 32;
+            top: 23%;
+            right: -39px;
+            width: 11px;
+            height: 122px;
+            border: 1px solid #101416;
+            border-radius: 2px;
+            background: repeating-linear-gradient(180deg,#969d9d 0 2px,#50575a 3px 6px,#171c1f 7px 10px);
+            box-shadow: 0 2px 8px rgba(0,0,0,.95), inset 0 1px 0 rgba(243,245,239,.34), inset 0 -3px 4px rgba(0,0,0,.85);
+            pointer-events: none;
+        }
+        /* Opposing molded grip panel makes the side rail feel usable with gloves. */
+        .tablet-grip {
+            position:absolute;z-index:32;top:23%;left:-39px;width:11px;height:122px;
+            border:1px solid #101416;border-radius:2px;
+            background:
+                linear-gradient(90deg,rgba(0,0,0,.55),transparent 32%,rgba(184,190,187,.14) 64%,rgba(0,0,0,.42)),
+                repeating-linear-gradient(180deg,#737b7d 0 2px,#343b3e 3px 6px,#14191b 7px 10px);
+            box-shadow:0 2px 8px rgba(0,0,0,.95),inset 0 1px 0 rgba(243,245,239,.18),inset 0 -3px 4px rgba(0,0,0,.95);
+            pointer-events:none;
+        }
+        .bezel-fastener {
+            position:absolute;z-index:33;top:51%;width:12px;height:12px;
+            border:1px solid #111618;border-radius:50%;
+            background:radial-gradient(circle at 34% 28%,#929795 0 1px,#52595a 2px,#22282a 4px,#0c1011 6px);
+            box-shadow:0 1px 3px rgba(0,0,0,.95),inset 0 1px 1px rgba(230,232,224,.24),inset 0 -2px 3px rgba(0,0,0,.9);
+            transform:translateY(-50%);pointer-events:none;
+        }
+        .bezel-fastener--left{left:-27px}.bezel-fastener--right{right:-27px}
+        .header { position: relative; border-radius: 1px; }
+        .header, .main-navigation, .view-panel, .footer { filter:brightness(var(--tsd-display-brightness,1)); }
+        .main-navigation,
+        .section-heading,
+        .inventory-panel,
+        .manifest-panel,
+        .procurement-product,
+        .upcoming-panel,
+        .item-card { border-radius: 1px; }
+        /* Screen lip and black elastomer gasket sit above the interface. */
+        .screen-well {
+            position: absolute;
+            z-index: 26;
+            inset: 14px;
+            border: 9px solid #0a0d0f;
+            pointer-events: none;
+            box-shadow:
+                0 0 0 1px rgba(117,126,127,.8),
+                0 0 0 3px #121719,
+                0 2px 0 5px rgba(5,7,8,.96),
+                0 4px 16px rgba(0,0,0,.9),
+                inset 0 10px 18px rgba(0,0,0,.99),
+                inset 0 0 0 1px rgba(157,165,164,.22),
+                inset 0 -5px 9px rgba(0,0,0,.96);
+        }
+        .glass-reflection {
+            position: absolute;
+            z-index: 28;
+            inset: 23px;
+            pointer-events: none;
+            mix-blend-mode: screen;
+            opacity: .68;
+            background:
+                linear-gradient(112deg,transparent 4%,rgba(229,236,232,.035) 17%,rgba(235,241,236,.14) 29%,rgba(226,234,230,.075) 36%,transparent 51%),
+                linear-gradient(180deg,rgba(242,244,238,.12),transparent 13%,transparent 89%,rgba(0,0,0,.30)),
+                linear-gradient(90deg,rgba(0,0,0,.24),transparent 4%,transparent 96%,rgba(0,0,0,.28)),
+                radial-gradient(ellipse at 13% 5%,rgba(229,235,229,.12),transparent 36%),
+                radial-gradient(ellipse at 61% 46%,rgba(208,217,213,.045),transparent 57%),
+                radial-gradient(ellipse at 88% 100%,rgba(0,0,0,.27),transparent 49%);
+            box-shadow: inset 0 1px 3px rgba(244,245,232,.22), inset 0 -4px 9px rgba(0,0,0,.68);
+        }
+        /* A few short scuffs catch the light; they do not cross the whole display. */
+        .glass-reflection::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            opacity: .62;
+            background-image:
+                linear-gradient(164deg,transparent 44%,rgba(238,240,232,.23) 49%,rgba(238,240,232,.07) 51%,transparent 56%),
+                linear-gradient(157deg,transparent 44%,rgba(226,231,225,.16) 49%,transparent 55%),
+                linear-gradient(172deg,transparent 44%,rgba(226,231,225,.13) 49%,transparent 56%),
+                linear-gradient(96deg,transparent 44%,rgba(226,231,225,.14) 49%,transparent 56%),
+                linear-gradient(171deg,transparent 48%,rgba(236,240,232,.11) 49.5%,transparent 52%);
+            background-size: 55px 10px, 34px 8px, 46px 9px, 28px 7px, 62px 11px;
+            background-position: 17% 23%, 81% 48%, 43% 77%, 87% 84%, 63% 15%;
+            background-repeat: no-repeat;
+        }
+        /* Matte bloom and faint handling smudges on the glass. */
+        .glass-reflection::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            opacity: .72;
+            background:
+                radial-gradient(ellipse at 27% 29%,rgba(218,225,218,.09),transparent 18%),
+                radial-gradient(ellipse at 76% 68%,rgba(218,225,218,.07),transparent 15%),
+                radial-gradient(ellipse at 35% 44%,rgba(180,194,190,.04),transparent 36%),
+                linear-gradient(112deg,transparent 0 47%,rgba(226,231,225,.055) 50%,transparent 58%);
+        }
+        .housing-wear {
+            position: absolute;
+            z-index: 31;
+            inset: -40px;
+            border-radius: 0;
+            pointer-events: none;
+            background:
+                linear-gradient(108deg,transparent 0 2%,rgba(197,186,151,.38) 2.08%,rgba(12,15,12,.82) 2.25%,transparent 2.45%) left 23px top 0 / 64px 2px no-repeat,
+                linear-gradient(108deg,transparent 0 2%,rgba(197,186,151,.32) 2.08%,rgba(12,15,12,.84) 2.25%,transparent 2.45%) right 15px bottom 1px / 54px 2px no-repeat,
+                linear-gradient(0deg,transparent 0 35%,rgba(197,186,151,.25) 46%,rgba(12,15,12,.72) 54%,transparent 67%) right 1px top 38% / 2px 34px no-repeat,
+                linear-gradient(112deg,transparent 0 14%,rgba(205,193,158,.64) 18%,rgba(9,11,11,.88) 23%,transparent 29%) left 101px top 8px / 32px 4px no-repeat,
+                linear-gradient(108deg,transparent 0 12%,rgba(193,183,154,.52) 18%,rgba(9,11,11,.88) 24%,transparent 31%) right 96px bottom 8px / 27px 4px no-repeat,
+                linear-gradient(0deg,transparent 0 28%,rgba(196,185,153,.42) 38%,rgba(9,11,11,.8) 47%,transparent 58%) left 1px top 46% / 3px 24px no-repeat,
+                radial-gradient(ellipse at 1% 1%,rgba(0,0,0,.48),transparent 68%) left 0 top 0 / 72px 32px no-repeat,
+                radial-gradient(ellipse at 99% 99%,rgba(0,0,0,.42),transparent 68%) right 0 bottom 0 / 76px 34px no-repeat,
+                linear-gradient(108deg,transparent 0 24%,rgba(180,170,145,.48) 31%,rgba(9,11,11,.9) 39%,transparent 50%) left 2px top 42% / 16px 28px no-repeat,
+                linear-gradient(108deg,transparent 0 22%,rgba(184,173,146,.42) 30%,rgba(9,11,11,.9) 38%,transparent 49%) right 2px bottom 43% / 18px 26px no-repeat;
+        }
+        /* Four raised impact guards, with actual recessed fasteners. */
+        .corner-guard {
+            position: absolute;
+            z-index: 34;
+            width: 94px;
+            height: 94px;
+            border: 1px solid #101416;
+            background:
+                radial-gradient(ellipse at 24% 17%,rgba(196,203,199,.055),transparent 39%),
+                linear-gradient(135deg,rgba(255,255,255,.075),transparent 38%),
+                linear-gradient(145deg,#434a4c 0%,#303638 28%,#23292b 67%,#171c1e 100%);
+            filter: drop-shadow(0 3px 4px rgba(0,0,0,.88));
+            pointer-events: none;
+        }
+        .corner-guard::before {
+            content: '';
+            position: absolute;
+            inset: 5px;
+            border: 1px solid rgba(139,147,147,.44);
+            box-shadow: inset 0 1px 2px rgba(255,255,255,.14), inset 0 -3px 5px rgba(0,0,0,.72);
+            pointer-events: none;
+        }
+        .corner-guard--tl { top:-40px;left:-40px;clip-path:polygon(0 0,100% 0,100% 58%,58% 100%,0 100%); }
+        .corner-guard--tr { top:-40px;right:-40px;clip-path:polygon(0 0,100% 0,100% 100%,42% 100%,0 58%); }
+        .corner-guard--bl { bottom:-40px;left:-40px;clip-path:polygon(0 0,58% 0,100% 42%,100% 100%,0 100%); }
+        .corner-guard--br { bottom:-40px;right:-40px;clip-path:polygon(42% 0,100% 0,100% 100%,0 100%,0 42%); }
+        .fastener {
+            position: absolute;
+            width: 15px;
+            height: 15px;
+            border: 1px solid #14191b;
+            border-radius: 50%;
+            background: radial-gradient(circle at 35% 30%,#c1c6c2 0 1px,#737b7d 2px,#343b3e 5px,#121719 6px);
+            box-shadow: 0 1px 2px #07090a, inset 0 1px 1px rgba(255,255,255,.42), inset 0 -2px 2px rgba(0,0,0,.82);
+        }
+        .fastener::after {
+            content: '';
+            position: absolute;
+            width: 7px;
+            height: 1px;
+            left: 3px;
+            top: 6px;
+            background: rgba(7,9,10,.95);
+            transform: rotate(-32deg);
+            box-shadow: 0 1px 0 rgba(220,224,219,.28);
+        }
+        .corner-guard--tl .fastener { left:15px;top:15px; }
+        .corner-guard--tr .fastener { right:15px;top:15px; }
+        .corner-guard--bl .fastener { left:15px;bottom:15px; }
+        .corner-guard--br .fastener { right:15px;bottom:15px; }
+        .tablet-engraving {
+            position:absolute;z-index:35;top:-30px;left:50%;transform:translateX(-50%);
+            display:flex;align-items:center;justify-content:center;min-width:208px;height:20px;padding:0 22px;
+            border:1px solid #080b0c;border-radius:2px;
+            background:linear-gradient(180deg,#080b0c 0%,#171c1e 48%,#0a0d0e 100%);
+            box-shadow:inset 0 2px 5px rgba(0,0,0,.92),inset 0 0 0 1px rgba(91,99,100,.18),0 1px 0 rgba(132,139,139,.24);
+            color:rgba(201,151,66,.72);font:700 8px/1 Arial,sans-serif;letter-spacing:2px;
+            text-shadow:0 -1px 1px rgba(0,0,0,.95),0 1px 0 rgba(236,194,112,.12);
+            pointer-events:none;white-space:nowrap;
+        }
+        .tablet-engraving::before {
+            content:'';position:absolute;z-index:-1;inset:-4px;border:1px solid #090c0d;border-radius:2px;
+            background:
+                radial-gradient(circle at 9px 50%,#777e7e 0 1px,#171c1e 1.6px,transparent 2.4px),
+                radial-gradient(circle at calc(100% - 9px) 50%,#777e7e 0 1px,#171c1e 1.6px,transparent 2.4px),
+                linear-gradient(180deg,#343b3d 0%,#202628 42%,#111618 100%);
+            box-shadow:inset 0 1px 0 rgba(230,233,226,.14),inset 0 -2px 4px rgba(0,0,0,.9),0 2px 5px rgba(0,0,0,.82);
+        }
+        .tablet-control-bank {
+            position:absolute;z-index:35;right:165px;bottom:-29px;left:auto;
+            display:flex;align-items:center;gap:6px;padding:4px 7px;
+            border:1px solid #111517;border-radius:3px;
+            background:linear-gradient(180deg,#343b3e,#1a1f21);
+            box-shadow:0 2px 3px rgba(0,0,0,.9),inset 0 1px 0 rgba(255,255,255,.15),inset 0 -3px 4px rgba(0,0,0,.82);
+            pointer-events:none;
+        }
+        .tablet-control-bank span { color:#a4aaab;font:700 7px/1 Arial,sans-serif;letter-spacing:1px; }
+        .tablet-control-bank i {
+            display:flex;align-items:center;justify-content:center;width:22px;height:20px;
+            border:1px solid #101416;border-radius:3px;
+            background:repeating-linear-gradient(90deg,transparent 0 3px,rgba(255,255,255,.045) 3px 4px),linear-gradient(180deg,#70787a 0%,#42494c 42%,#1a1f21 100%);
+            box-shadow:inset 0 1px 0 rgba(242,244,237,.3),inset 0 -3px 3px rgba(0,0,0,.76),0 2px 1px #090b0c;
+            color:#e0a43b;font:700 11px/1 Arial,sans-serif;font-style:normal;
+        }
+        .tablet-control-bank button { pointer-events:auto;cursor:pointer;appearance:none; }
+        .tablet-control-bank .brightness-button {
+            display:flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;
+            border:1px solid #101416;border-radius:3px;
+            background:repeating-linear-gradient(90deg,transparent 0 3px,rgba(255,255,255,.035) 3px 4px),linear-gradient(180deg,#687174 0%,#3a4144 42%,#171c1e 100%);
+            box-shadow:inset 0 1px 0 rgba(242,244,237,.24),inset 0 -3px 3px rgba(0,0,0,.82),0 2px 1px #090b0c;
+            color:#d4a94f;font:700 11px/1 Arial,sans-serif;
+        }
+        .tablet-control-bank .brightness-button:active { transform:translateY(1px);box-shadow:inset 0 2px 3px rgba(0,0,0,.82); }        .tablet-power-button {
+            position:absolute;z-index:36;right:95px;bottom:-28px;width:28px;height:28px;padding:0;
+            border:3px solid #111618;border-radius:50%;
+            background:radial-gradient(circle at 34% 27%,#747b7d 0%,#3d4447 38%,#1b2022 73%,#101416 100%);
+            color:#e0a43b;box-shadow:0 0 0 2px rgba(224,164,59,.68),inset 0 1px 1px rgba(246,247,240,.38),inset 0 -4px 5px rgba(0,0,0,.92),0 3px 4px rgba(0,0,0,.9);
+            cursor:pointer;pointer-events:auto;
+        }
+        .tablet-power-button::before { content:'⏻';display:block;font:700 15px/21px 'Segoe UI Symbol',Arial,sans-serif;text-align:center;text-shadow:0 0 5px rgba(224,164,59,.52); }
+        .tablet-power-button:hover { filter:brightness(1.15); }
+        .tablet-power-button:active { transform:translateY(2px);box-shadow:0 0 0 1px rgba(224,164,59,.48),inset 0 3px 5px rgba(0,0,0,.9); }
+        .tablet-status-light { z-index:35;right:20px;bottom:-26px; }
+        @media (max-width:900px) {
+            .app{border-width:16px;padding:12px}.app::before{inset:-16px}.app::after{right:-15px}.tablet-grip{left:-15px}
+            .screen-well{inset:8px;border-width:6px}.glass-reflection{inset:14px}.housing-wear{inset:-16px}
+            .corner-guard{width:70px;height:70px}.corner-guard--tl{top:-16px;left:-16px}.corner-guard--tr{top:-16px;right:-16px}.corner-guard--bl{bottom:-16px;left:-16px}.corner-guard--br{bottom:-16px;right:-16px}
+        }
+            /* Field tablet shell hardware and final tactile finish */
+        .app { border-image:linear-gradient(145deg,#3e4547 0%,#2d3335 13%,#202628 32%,#181d1f 53%,#282e30 76%,#151a1c 100%) 1; }
+        .app::before { box-shadow:inset 0 0 0 2px rgba(120,127,128,.22),inset 0 0 0 4px rgba(7,9,10,.94),inset 0 0 0 6px rgba(92,99,100,.25),inset 0 0 0 8px rgba(8,11,12,.96); }
+        .app::after { background:repeating-linear-gradient(180deg,#747c7e 0 2px,#3a4144 3px 6px,#121719 7px 10px); }
+        .tablet-grip { background:linear-gradient(90deg,rgba(0,0,0,.55),transparent 32%,rgba(184,190,187,.11) 64%,rgba(0,0,0,.42)),repeating-linear-gradient(180deg,#687174 0 2px,#303739 3px 6px,#101416 7px 10px); }
+        .corner-guard { background:radial-gradient(ellipse at 24% 17%,rgba(196,203,199,.045),transparent 39%),linear-gradient(135deg,rgba(255,255,255,.055),transparent 38%),linear-gradient(145deg,#3e4547 0%,#2e3436 28%,#222729 67%,#151a1c 100%); }
+        .housing-wear { background-image:radial-gradient(ellipse at 50% 50%,rgba(120,111,91,.16),rgba(8,10,10,.16) 38%,transparent 73%) left 8px top 45% / 27px 34px no-repeat,radial-gradient(ellipse at 50% 50%,rgba(120,111,91,.14),rgba(8,10,10,.16) 39%,transparent 74%) right 9px top 56% / 29px 36px no-repeat,linear-gradient(180deg,transparent 0 2px,rgba(0,0,0,.24) 4px,transparent 7px) left 15% top 0 / 70% 8px no-repeat,linear-gradient(180deg,transparent 0 2px,rgba(0,0,0,.22) 4px,transparent 7px) left 10% bottom 0 / 74% 8px no-repeat; }
+        .tablet-link-indicator {position:absolute;z-index:35;top:-30px;right:116px;height:20px;min-width:78px;padding:0 7px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid #090c0d;border-radius:2px;background:linear-gradient(180deg,#080b0c,#1a2022 48%,#090c0d);box-shadow:inset 0 2px 4px rgba(0,0,0,.92),inset 0 0 0 1px rgba(100,108,108,.14),0 1px 0 rgba(132,139,139,.22);color:#777f80;font:700 6px/1 Arial,sans-serif;letter-spacing:1px;pointer-events:none;}
+        .tablet-link-led {width:5px;height:5px;border-radius:50%;background:#3a4142;box-shadow:inset 0 1px 1px #080a0b,0 0 2px rgba(0,0,0,.8);}
+        .tablet-link-icon {width:14px;height:13px;overflow:visible;fill:none;stroke:#555d5e;stroke-width:1.6;stroke-linecap:round;}
+        .tablet-link-icon circle {fill:#555d5e;stroke:none;}
+        .tablet-link-indicator.is-connected .tablet-link-led {background:#6da775;box-shadow:0 0 5px rgba(109,167,117,.7),inset 0 1px 1px rgba(255,255,255,.45);}
+        .tablet-link-indicator.is-connected .tablet-link-icon {stroke:#75a97c;filter:drop-shadow(0 0 2px rgba(109,167,117,.45));}
+        .tablet-link-indicator.is-connected .tablet-link-icon circle {fill:#75a97c;}
+        .tablet-function-bank {position:absolute;z-index:35;left:104px;bottom:-30px;display:flex;align-items:center;gap:5px;padding:3px 6px;border:1px solid #101416;border-radius:3px;background:linear-gradient(180deg,#303739,#171c1e);box-shadow:0 2px 4px rgba(0,0,0,.9),inset 0 1px 0 rgba(255,255,255,.12),inset 0 -3px 4px rgba(0,0,0,.88);pointer-events:none;}
+        .tablet-function-label {color:#92999a;font:700 6px/1 Arial,sans-serif;letter-spacing:.7px;}
+        .tablet-function-key {height:17px;min-width:25px;padding:0 4px;display:flex;align-items:center;justify-content:center;border:1px solid #101416;border-radius:2px;background:linear-gradient(180deg,#596164,#242a2c);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 -2px 3px rgba(0,0,0,.82),0 1px 1px #090b0c;color:#9da3a2;font:700 6px/1 Arial,sans-serif;letter-spacing:.4px;}
+        .tablet-mode-dial {position:relative;width:22px;height:22px;border:2px solid #0c1011;border-radius:50%;background:radial-gradient(circle at 34% 29%,#666e70 0%,#363d3f 42%,#181d1f 76%,#090c0d 100%);box-shadow:inset 0 1px 1px rgba(255,255,255,.28),inset 0 -3px 4px rgba(0,0,0,.88),0 1px 2px rgba(0,0,0,.9);}
+        .tablet-mode-dial::after {content:'';position:absolute;top:2px;left:8px;width:2px;height:5px;background:#b0a27f;box-shadow:0 1px 1px #080a0b;}
+        @media (max-width:900px) {.tablet-link-indicator{right:80px;top:-24px}.tablet-function-bank{left:22px;bottom:-26px}}        body {background:#080a0c;}
+        .housing-wear {background-image:none !important;}
+        .tablet-config-panel {min-height:245px;}
+        .tablet-hotkey-setting {display:flex;align-items:center;justify-content:space-between;gap:24px;padding:30px 28px 24px;border-bottom:1px solid rgba(166,128,61,.28);}
+        .tablet-hotkey-title {color:#e0a43b;font-size:14px;font-weight:800;letter-spacing:1.7px;text-transform:uppercase;}
+        .tablet-hotkey-help {margin-top:9px;max-width:560px;color:var(--muted);font-size:12px;line-height:1.6;}
+        .tablet-hotkey-actions {display:flex;align-items:center;gap:9px;flex-shrink:0;}
+        #tablet-hotkey-value {width:105px;height:38px;text-align:center;color:#e5e3da;font:700 14px/1 Arial,sans-serif;letter-spacing:1px;background:linear-gradient(180deg,#101517,#1b2022);border:1px solid #424a4d;border-radius:2px;box-shadow:inset 0 2px 5px rgba(0,0,0,.75),0 1px 0 rgba(255,255,255,.05);}
+        #tablet-hotkey-change,#tablet-hotkey-cancel {min-width:104px;height:38px;padding:0 12px;border:1px solid #9e712c;border-radius:2px;background:linear-gradient(180deg,#b37a25,#714b19);color:#f3e5c6;font-size:10px;font-weight:800;letter-spacing:1px;}
+        #tablet-hotkey-cancel {border-color:#454b4d;background:linear-gradient(180deg,#454d50,#22282a);color:#c1c5c1;}
+        .tablet-hotkey-status {padding:18px 28px;color:#8f9899;font-size:11px;letter-spacing:.4px;}
+        @media (max-width:900px) {.tablet-hotkey-setting{align-items:flex-start;flex-direction:column;padding:22px 18px}.tablet-hotkey-status{padding:14px 18px}}        .corner-guard {width:100px;height:100px;border:2px solid #070a0b;background:linear-gradient(138deg,rgba(255,255,255,.035),transparent 31%),linear-gradient(180deg,rgba(0,0,0,.04),rgba(0,0,0,.32)),linear-gradient(145deg,#24292b 0%,#171c1e 42%,#090c0d 100%);box-shadow:inset 0 0 0 1px rgba(99,106,107,.22),inset 0 2px 5px rgba(255,255,255,.055),inset 0 -7px 10px rgba(0,0,0,.96),0 6px 10px rgba(0,0,0,.96);filter:drop-shadow(0 4px 6px rgba(0,0,0,.95));}
+        .corner-guard::before {inset:7px;border:1px solid rgba(93,101,102,.36);box-shadow:inset 0 1px 2px rgba(255,255,255,.08),inset 0 -4px 7px rgba(0,0,0,.94),0 0 0 1px rgba(0,0,0,.75);}
+        .corner-guard::after {content:'';position:absolute;z-index:1;inset:2px;opacity:.24;background:rgba(169,177,174,.28);filter:url(#graphite-grain);mix-blend-mode:soft-light;pointer-events:none;}
+        .fastener {z-index:2;width:15px;height:15px;border:2px solid #111617;background:radial-gradient(circle at 34% 28%,#8b918f 0 1px,#61686a 2px,#353c3e 5px,#101416 7px);box-shadow:0 0 0 2px #080b0c,0 0 0 3px rgba(78,86,87,.32),inset 0 1px 1px rgba(235,238,230,.26),inset 0 -3px 4px rgba(0,0,0,.96),0 1px 2px rgba(0,0,0,.95);}
+        .fastener::before {content:'';position:absolute;z-index:-1;inset:-4px;border:1px solid #080b0c;border-radius:50%;background:radial-gradient(circle,#050708 0 55%,#434b4d 60% 71%,#0b0f10 77% 100%);box-shadow:inset 0 2px 3px rgba(0,0,0,.98),0 0 0 1px rgba(0,0,0,.7);}
+        /* Raised perimeter rails tie the corner bumpers into one rugged chassis. */
+        .bezel-rail {position:absolute;z-index:33;pointer-events:none;border:1px solid #080b0c;}
+        .bezel-rail--left,.bezel-rail--right {top:8%;bottom:8%;width:15px;border-radius:2px;background:linear-gradient(90deg,#080b0c 0%,#252c2e 18%,#555d5f 28%,#22282a 39%,#101416 48%,#303638 62%,#161b1d 78%,#080b0c 100%);box-shadow:inset 1px 0 1px rgba(220,225,219,.13),inset -2px 0 4px rgba(0,0,0,.94),0 0 0 1px rgba(0,0,0,.78),0 2px 5px rgba(0,0,0,.82);}
+        .bezel-rail--left {left:-31px}.bezel-rail--right {right:-31px}
+        .bezel-rail--top,.bezel-rail--bottom {left:8%;right:8%;height:13px;border-radius:2px;background:linear-gradient(180deg,#080b0c 0%,#242b2d 18%,#555d5f 29%,#22282a 41%,#101416 53%,#303638 67%,#161b1d 82%,#080b0c 100%);box-shadow:inset 0 1px 1px rgba(220,225,219,.13),inset 0 -2px 4px rgba(0,0,0,.94),0 0 0 1px rgba(0,0,0,.78),0 2px 5px rgba(0,0,0,.82);}
+        .bezel-rail--top {top:-27px}.bezel-rail--bottom {bottom:-27px}
+        .bezel-rail--left::after,.bezel-rail--right::after {content:'';position:absolute;top:12%;bottom:12%;left:5px;right:5px;border-left:1px solid rgba(170,177,174,.16);border-right:1px solid rgba(0,0,0,.8);background:repeating-linear-gradient(180deg,transparent 0 19px,rgba(0,0,0,.62) 19px 21px,rgba(150,157,155,.16) 21px 22px,transparent 22px 25px);}
+        .bezel-rail--top::after,.bezel-rail--bottom::after {content:'';position:absolute;left:7%;right:7%;top:4px;bottom:4px;border-top:1px solid rgba(0,0,0,.8);border-bottom:1px solid rgba(170,177,174,.14);background:repeating-linear-gradient(90deg,transparent 0 42px,rgba(0,0,0,.6) 42px 44px,rgba(150,157,155,.13) 44px 45px,transparent 45px 49px);}
+        .corner-guard {background:radial-gradient(ellipse at 23% 17%,rgba(221,226,219,.09),transparent 31%),linear-gradient(135deg,rgba(255,255,255,.07),transparent 34%),linear-gradient(145deg,#303638 0%,#202628 35%,#171c1e 68%,#080b0c 100%);box-shadow:inset 0 0 0 1px rgba(120,128,127,.28),inset 0 2px 4px rgba(255,255,255,.07),inset 0 -8px 11px rgba(0,0,0,.96),0 6px 10px rgba(0,0,0,.96);}
+        .corner-guard::before {inset:5px;border-color:rgba(104,113,114,.38);box-shadow:inset 0 1px 2px rgba(255,255,255,.08),inset 0 -5px 8px rgba(0,0,0,.96),0 0 0 2px rgba(0,0,0,.82);}
+        .corner-guard::after {content:'';position:absolute;z-index:1;inset:2px;opacity:.34;background:rgba(165,173,170,.32);filter:url(#graphite-grain);mix-blend-mode:soft-light;pointer-events:none;}
+        @media (max-width:900px) {.bezel-rail--left{left:-14px;width:7px}.bezel-rail--right{right:-14px;width:7px}.bezel-rail--top{top:-14px;height:7px}.bezel-rail--bottom{bottom:-14px;height:7px}.bezel-rail--left::after,.bezel-rail--right::after,.bezel-rail--top::after,.bezel-rail--bottom::after{display:none}.corner-guard{width:76px;height:76px}}
+        /* Thick matte rubber impact caps with a molded lip and deeply seated hardware. */
+        .corner-guard {width:108px;height:108px;border:2px solid #050708;background:radial-gradient(ellipse at 24% 13%,rgba(191,198,191,.11),transparent 29%),radial-gradient(ellipse at 80% 83%,rgba(0,0,0,.5),transparent 48%),linear-gradient(142deg,#1c2122 0%,#101415 28%,#090c0d 66%,#050708 100%);box-shadow:inset 0 1px 0 rgba(235,238,228,.16),inset 0 0 0 2px rgba(0,0,0,.78),inset 2px 2px 5px rgba(255,255,255,.055),inset -4px -7px 10px rgba(0,0,0,.98),0 2px 0 #303638,0 7px 12px rgba(0,0,0,.98);filter:drop-shadow(0 5px 7px rgba(0,0,0,.98));}
+        .corner-guard::before {inset:6px;border:1px solid rgba(91,100,101,.48);border-radius:4px;background:linear-gradient(135deg,rgba(0,0,0,.44),transparent 18% 72%,rgba(0,0,0,.42));box-shadow:inset 0 2px 3px rgba(0,0,0,.9),inset 0 -1px 0 rgba(190,197,190,.08),0 0 0 2px rgba(0,0,0,.72),0 0 0 3px rgba(117,124,122,.12);}
+        .corner-guard::after {content:'';position:absolute;z-index:1;inset:3px;opacity:.32;background:rgba(150,158,153,.38);filter:url(#graphite-grain);mix-blend-mode:soft-light;pointer-events:none;}
+        .fastener {width:16px;height:16px;border-color:#080b0c;background:radial-gradient(circle at 34% 27%,#5e6565 0 1px,#343a3b 2px,#171c1d 5px,#090c0d 7px);box-shadow:0 0 0 2px #050708,0 0 0 3px rgba(70,78,79,.26),inset 0 1px 1px rgba(213,218,208,.2),inset 0 -3px 4px rgba(0,0,0,.98),0 1px 2px #000;}
+        .fastener::before {inset:-5px;border-color:#050708;background:radial-gradient(circle,#030506 0 55%,#343b3c 60% 67%,#111617 73% 100%);box-shadow:inset 0 2px 4px rgba(0,0,0,.99),0 0 0 1px rgba(0,0,0,.9);}
+        @media (max-width:900px) {.corner-guard{width:76px;height:76px}}        .tablet-control-bank .volume-button {display:flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid #101416;border-radius:3px;background:repeating-linear-gradient(90deg,transparent 0 3px,rgba(255,255,255,.035) 3px 4px),linear-gradient(180deg,#687174 0%,#3a4144 42%,#171c1e 100%);box-shadow:inset 0 1px 0 rgba(242,244,237,.24),inset 0 -3px 3px rgba(0,0,0,.82),0 2px 1px #090b0c;color:#d4a94f;font:700 11px/1 Arial,sans-serif;}
+        #tablet-volume-level {min-width:22px;text-align:center;color:#a4aaab;font:700 7px/1 Arial,sans-serif;}
+        .tablet-sound-setting {display:flex;align-items:center;justify-content:space-between;gap:24px;padding:24px 28px 20px;border-bottom:1px solid rgba(166,128,61,.28);}
+        #tablet-sounds-toggle {min-width:112px;height:38px;padding:0 12px;border:1px solid #536b55;border-radius:2px;background:linear-gradient(180deg,#344b38,#1b2b20);color:#c6dfc3;font-size:10px;font-weight:800;letter-spacing:1px;}
+        #tablet-sounds-toggle[aria-pressed='false'] {border-color:#454b4d;background:linear-gradient(180deg,#454d50,#22282a);color:#c1c5c1;}
+        .tablet-config-panel {min-height:340px;}
+        @media (max-width:900px) {.tablet-sound-setting{align-items:flex-start;flex-direction:column;padding:22px 18px}}        /* Darken the inner glass lip so the bezel reads as casting a deep shadow onto the screen. */
+        .screen-well {border-color:#050708;box-shadow:0 0 0 1px rgba(0,0,0,.96),0 0 0 3px #060809,0 3px 0 5px rgba(0,0,0,.98),0 7px 18px rgba(0,0,0,.96),inset 0 14px 18px rgba(0,0,0,.99),inset 9px 0 13px rgba(0,0,0,.9),inset -9px 0 13px rgba(0,0,0,.9),inset 0 -9px 14px rgba(0,0,0,.95),inset 0 0 0 1px rgba(64,70,70,.2);}
+        .tablet-engraving {pointer-events:auto;cursor:grab;touch-action:none;user-select:none;}
+        .tablet-engraving:active {cursor:grabbing;}
+        .tablet-resize-handle {position:absolute;z-index:39;width:26px;height:26px;opacity:.2;pointer-events:auto;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 68%,rgba(183,190,186,.4) 70% 73%,transparent 75%);}
+        .tablet-resize--tl {top:-39px;left:-39px;cursor:nwse-resize}.tablet-resize--tr {top:-39px;right:-39px;cursor:nesw-resize}.tablet-resize--bl {bottom:-39px;left:-39px;cursor:nesw-resize}.tablet-resize--br {bottom:-39px;right:-39px;cursor:nwse-resize}
+        .tablet-resize-handle:hover {opacity:.75}        /* The inner pale glint is occluded at the glass edge; corner wedges follow the impact guards. */
+        .glass-reflection {box-shadow:inset 0 0 0 2px rgba(0,0,0,.68),inset 0 0 0 3px rgba(3,5,6,.48),inset 0 6px 10px rgba(0,0,0,.72),inset 8px 0 12px rgba(0,0,0,.68),inset -8px 0 12px rgba(0,0,0,.68),inset 0 -8px 12px rgba(0,0,0,.72);}
+        .glass-reflection::after {opacity:.9;background:linear-gradient(135deg,rgba(0,0,0,.72),rgba(0,0,0,.34) 30%,transparent 74%) left top/112px 82px no-repeat,linear-gradient(225deg,rgba(0,0,0,.72),rgba(0,0,0,.34) 30%,transparent 74%) right top/112px 82px no-repeat,linear-gradient(45deg,rgba(0,0,0,.74),rgba(0,0,0,.34) 30%,transparent 74%) left bottom/112px 82px no-repeat,linear-gradient(315deg,rgba(0,0,0,.74),rgba(0,0,0,.34) 30%,transparent 74%) right bottom/112px 82px no-repeat,radial-gradient(ellipse at 27% 29%,rgba(218,225,218,.09),transparent 18%),radial-gradient(ellipse at 76% 68%,rgba(218,225,218,.07),transparent 15%),radial-gradient(ellipse at 35% 44%,rgba(180,194,190,.04),transparent 36%),linear-gradient(112deg,transparent 0 47%,rgba(226,231,225,.055) 50%,transparent 58%);}        .tablet-power-screen {position:absolute;z-index:27;inset:40px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at 50% 46%,rgba(38,35,25,.7),transparent 45%),linear-gradient(180deg,#080b0d,#040607 68%,#090b0c);opacity:0;visibility:hidden;pointer-events:none;transition:opacity .13s ease,visibility 0s linear .13s;}
+        .app.tablet-booting .tablet-power-screen,.app.tablet-shutting-down .tablet-power-screen {opacity:1;visibility:visible;transition:opacity .12s ease;}
+        .tablet-power-splash {display:flex;flex-direction:column;align-items:center;gap:10px;transform:translateY(-2px);}
+        .tablet-power-logo {width:64px;height:54px;filter:drop-shadow(0 0 10px rgba(201,154,80,.22));}
+        .tablet-power-brand {color:#c99a50;font:700 11px/1 Arial,sans-serif;letter-spacing:2.1px;text-shadow:0 1px 3px #000;}
+        .tablet-power-status {min-height:9px;margin-top:3px;color:#777c78;font:700 7px/1 Arial,sans-serif;letter-spacing:1.7px;}
+        .tablet-power-progress {width:128px;height:2px;margin-top:2px;overflow:hidden;background:#202426;box-shadow:0 1px 2px #000;}
+        .tablet-power-progress span {display:block;width:0;height:100%;background:linear-gradient(90deg,#60431f,#dfa847);box-shadow:0 0 5px rgba(224,164,59,.42);}
+        .app.tablet-booting .tablet-power-progress span {animation:tablet-boot-progress .48s ease-out forwards;}
+        .app.tablet-shutting-down .tablet-power-progress span {width:100%;animation:tablet-shutdown-progress .30s ease-in forwards;}
+        .app.tablet-booting .header,.app.tablet-booting .main-navigation,.app.tablet-booting .view-panel,.app.tablet-booting .footer,.app.tablet-shutting-down .header,.app.tablet-shutting-down .main-navigation,.app.tablet-shutting-down .view-panel,.app.tablet-shutting-down .footer {opacity:.08;transition:opacity .15s ease;}
+        @keyframes tablet-boot-progress {to{width:100%}}
+        @keyframes tablet-shutdown-progress {to{width:0}}        /* Full branded splash, held long enough to read but kept under a quick boot cycle. */
+        .tablet-power-screen {background:radial-gradient(ellipse at 50% 45%,rgba(73,56,28,.30),transparent 48%),linear-gradient(180deg,#080b0d 0%,#050708 58%,#0b0e0f 100%);}
+        .tablet-power-screen::before {content:'';position:absolute;inset:0;opacity:.12;pointer-events:none;background:repeating-linear-gradient(180deg,transparent 0 3px,rgba(185,192,184,.08) 4px,transparent 5px);}
+        .tablet-power-splash {position:relative;z-index:1;gap:17px;transform:none;}
+        .tablet-power-logo {width:min(27vw,270px);height:min(22.5vw,225px);filter:drop-shadow(0 0 22px rgba(201,154,80,.26));}
+        .tablet-power-brand {font-size:clamp(18px,2.1vw,28px);letter-spacing:3.3px;text-shadow:0 2px 7px #000,0 0 16px rgba(201,154,80,.12);}
+        .tablet-power-subtitle {margin-top:-9px;color:rgba(224,164,59,.76);font:700 10px/1 Arial,sans-serif;letter-spacing:4px;}
+        .tablet-power-status {min-height:10px;margin-top:9px;color:#858780;font-size:8px;letter-spacing:2px;}
+        .tablet-power-progress {width:min(40vw,420px);height:3px;margin-top:4px;background:linear-gradient(90deg,#171b1d,#272b2a,#171b1d);}
+        .tablet-power-progress span {background:linear-gradient(90deg,#7b5423 0%,#c18b3a 44%,#f0c16c 72%,#a66e25 100%);box-shadow:0 0 8px rgba(224,164,59,.52);}
+        .app.tablet-booting .tablet-power-progress span {animation-duration:1.32s;}
+        .app.tablet-booting .tablet-power-logo {animation:tablet-logo-arrival .72s cubic-bezier(.2,.75,.25,1) both;}
+        .app.tablet-booting .tablet-power-brand {animation:tablet-brand-arrival .55s ease-out .12s both;}
+        .app.tablet-booting .header,.app.tablet-booting .main-navigation,.app.tablet-booting .view-panel,.app.tablet-booting .footer {opacity:.035;}
+        .app.tablet-booting .header,.app.tablet-booting .main-navigation,.app.tablet-booting .view-panel,.app.tablet-booting .footer,.app.tablet-shutting-down .header,.app.tablet-shutting-down .main-navigation,.app.tablet-shutting-down .view-panel,.app.tablet-shutting-down .footer {transition:opacity .2s ease;}
+        @keyframes tablet-logo-arrival {0%{opacity:0;transform:scale(.78);filter:blur(5px) drop-shadow(0 0 0 rgba(201,154,80,0))}65%{opacity:1;transform:scale(1.035);filter:blur(0) drop-shadow(0 0 26px rgba(201,154,80,.4))}100%{opacity:1;transform:scale(1);filter:blur(0) drop-shadow(0 0 22px rgba(201,154,80,.26))}}
+        @keyframes tablet-brand-arrival {from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes tablet-boot-progress {to{width:100%}}        .tablet-about-panel {margin-top:12px;overflow:hidden;}
+        .tablet-about-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:rgba(108,116,116,.17);}
+        .tablet-about-entry {display:flex;min-height:66px;flex-direction:column;justify-content:center;gap:8px;padding:12px 18px;background:linear-gradient(120deg,#151a1c,#101416);}
+        .tablet-about-entry>span,.tablet-about-ip>span {color:#9b773e;font:700 8px/1 Arial,sans-serif;letter-spacing:1.4px;}
+        .tablet-about-entry>strong {color:#d7d6ce;font:700 11px/1.35 Arial,sans-serif;letter-spacing:.7px;}
+        .tablet-about-owner {grid-column:1 / -1;}
+        .tablet-about-ip {display:flex;flex-direction:column;gap:8px;padding:14px 18px;background:linear-gradient(90deg,rgba(170,119,43,.09),transparent 65%);border-top:1px solid rgba(166,128,61,.28);}
+        .tablet-about-ip>strong {color:#7f8583;font:600 9px/1.5 Arial,sans-serif;letter-spacing:.45px;}
+        @media (max-width:900px) {.tablet-about-grid{grid-template-columns:1fr}.tablet-about-owner{grid-column:auto}}        #config-view,#device-view {overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#6f5632 #101416;overscroll-behavior:contain;padding-bottom:12px;}
+        #config-view::-webkit-scrollbar,#device-view::-webkit-scrollbar {width:8px;}
+        #config-view::-webkit-scrollbar-track,#device-view::-webkit-scrollbar-track {background:#101416;border-left:1px solid rgba(142,117,74,.18);}
+        #config-view::-webkit-scrollbar-thumb,#device-view::-webkit-scrollbar-thumb {background:linear-gradient(180deg,#72592f,#392f20);border:1px solid #141819;border-radius:4px;}
+        #config-view .tablet-config-panel,#device-view .tablet-about-panel {flex:0 0 auto;}
+        #device-view .tablet-about-panel {margin-top:0;}        .rouble-wallet {margin-top:8px;color:#e2c28b;font-size:12px;font-weight:800;letter-spacing:1px;}
+.rouble-wallet span {display:inline-block;margin-right:14px;}
+.rouble-wallet small {font-size:8px;color:#929a96;margin-right:8px;}
+.procurement-traders {display:flex;gap:7px;overflow-x:auto;padding:0 0 12px;flex-shrink:0;}
+.procurement-trader {min-width:95px;flex:0 0 auto;padding:11px 16px;background:#111719;border:1px solid #39403d;color:#c0c5bf;font-size:11px;font-weight:800;cursor:pointer;}
+.procurement-trader small {display:block;margin-top:5px;font-size:8px;color:#929b94;}
+.procurement-trader.active {border-color:#b18a48;background:#2b281e;color:#e8c990;}
+.procurement-toolbar {display:flex;gap:8px;flex-wrap:wrap;}
+#procurement-search {flex:1;min-width:180px;background:#0c1112;color:#ddd;border:1px solid #3b4542;padding:10px;}
+.procurement-note {padding:12px 16px;color:#aeb4ac;font-size:11px;line-height:1.6;border-bottom:1px solid #2c3431;}
+.procurement-offers {display:flex;flex-direction:column;}
+.procurement-offer {display:grid;grid-template-columns:64px minmax(150px,1fr) minmax(190px,260px);gap:15px;align-items:center;padding:16px;border-bottom:1px solid #2d3532;}
+.procurement-offer-icon {width:60px;height:60px;object-fit:contain;background:#1a201e;border:1px solid #353e36;}
+.procurement-offer-info {min-width:0;}.procurement-offer-meta {font-size:9px;color:#a0aba1;margin:7px 0;}
+.procurement-scheme {max-width:100%;padding:8px;background:#101617;color:#dbc69d;border:1px solid #424a40;font-size:10px;}
+.procurement-offer-controls {display:grid;grid-template-columns:66px 1fr;gap:8px;align-items:center;}
+.procurement-quantity {width:66px;box-sizing:border-box;background:#0b1112;color:#ddd;padding:9px;border:1px solid #465043;}
+.procurement-offer-total {font-size:10px;line-height:1.5;color:#d5b67f;overflow-wrap:anywhere;}
+.procurement-offer-controls .purchase-button {grid-column:1/-1;}
+.procurement-empty {padding:28px;color:#acb4ab;font-size:12px;line-height:1.7;}
+.procurement-pagination {display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:15px;color:#b9beaf;font-size:10px;}
+.procurement-pagination button {padding:8px;background:#1a211e;border:1px solid #4a5345;color:#d1c6ac;cursor:pointer;}
+.procurement-pagination button:disabled,.purchase-button:disabled {opacity:.42;cursor:default;}
+@media(max-width:1000px){.procurement-offer{grid-template-columns:48px minmax(120px,1fr) 190px;gap:10px;}.procurement-offer-icon{width:46px;height:46px;}}
+
+</style>
 </head>
 
 <body>
-    <div class='app'>
+    <div class='app tablet-booting'>
+        <svg class='bezel-grain' viewBox='0 0 1200 800' preserveAspectRatio='none' aria-hidden='true'>
+            <defs>
+                <filter id='graphite-grain' x='0' y='0' width='100%' height='100%'>
+                    <feTurbulence type='fractalNoise' baseFrequency='.62' numOctaves='3' seed='27' stitchTiles='stitch'/>
+                    <feColorMatrix type='saturate' values='0' result='mono'/>
+                    <feComponentTransfer>
+                        <feFuncR type='linear' slope='1.65' intercept='-.32'/>
+                        <feFuncG type='linear' slope='1.65' intercept='-.32'/>
+                        <feFuncB type='linear' slope='1.65' intercept='-.32'/>
+                    </feComponentTransfer>
+                </filter>
+                <mask id='bezel-only'>
+                    <rect width='1200' height='800' fill='white'/>
+                    <rect x='48' y='44' width='1104' height='712' fill='black'/>
+                </mask>
+            </defs>
+            <rect width='1200' height='800' fill='#b9bdba' opacity='.38' filter='url(#graphite-grain)' mask='url(#bezel-only)'/>
+        </svg>
+        <div class='glass-reflection' aria-hidden='true'></div>
+        <div class='tablet-grip' aria-hidden='true'></div>
+        <span class='bezel-rail bezel-rail--left' aria-hidden='true'></span>
+        <span class='bezel-rail bezel-rail--right' aria-hidden='true'></span>
+        <span class='bezel-rail bezel-rail--top' aria-hidden='true'></span>
+        <span class='bezel-rail bezel-rail--bottom' aria-hidden='true'></span>        <span class='bezel-fastener bezel-fastener--left' aria-hidden='true'></span>
+        <span class='bezel-fastener bezel-fastener--right' aria-hidden='true'></span>
+        <div class='corner-guard corner-guard--tl' aria-hidden='true'><span class='fastener'></span></div>
+        <div class='corner-guard corner-guard--tr' aria-hidden='true'><span class='fastener'></span></div>
+        <div class='corner-guard corner-guard--bl' aria-hidden='true'><span class='fastener'></span></div>
+        <div class='corner-guard corner-guard--br' aria-hidden='true'><span class='fastener'></span></div>
+        <span class='tablet-resize-handle tablet-resize--tl' data-corner='tl' title='Drag corner to resize tablet'></span>
+        <span class='tablet-resize-handle tablet-resize--tr' data-corner='tr' title='Drag corner to resize tablet'></span>
+        <span class='tablet-resize-handle tablet-resize--bl' data-corner='bl' title='Drag corner to resize tablet'></span>
+        <span class='tablet-resize-handle tablet-resize--br' data-corner='br' title='Drag corner to resize tablet'></span>
+        <div class='screen-well' aria-hidden='true'></div>
+        <div class='tablet-power-screen' aria-hidden='true'><div class='tablet-power-splash'><svg class='tablet-power-logo' viewBox='0 0 120 100' xmlns='http://www.w3.org/2000/svg'><defs><linearGradient id='tsdBootGold' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#f3d49a'/><stop offset='.52' stop-color='#c99a50'/><stop offset='1' stop-color='#805523'/></linearGradient></defs><g fill='url(#tsdBootGold)' stroke='#f0c77e' stroke-width='.8'><path d='M49 38 L5 17 L27 19 L7 8 L38 16 L23 3 L53 15 L60 25 L67 15 L97 3 L82 16 L113 8 L93 19 L115 17 L71 38 Z'/><path d='M7 17 L43 31 L39 35 L5 22 Z' opacity='.78'/><path d='M113 17 L77 31 L81 35 L115 22 Z' opacity='.78'/><path d='M17 29 L45 39 L41 43 L13 34 Z' opacity='.68'/><path d='M103 29 L75 39 L79 43 L107 34 Z' opacity='.68'/></g><path d='M37 39 C39 19 49 8 60 7 C71 8 81 19 83 39 C76 47 68 50 60 50 C52 50 44 47 37 39 Z' fill='#17191a' stroke='url(#tsdBootGold)' stroke-width='3'/><path d='M40 37 Q60 20 80 37 M50 14 L54 46 M60 8 L60 49 M70 14 L66 46' fill='none' stroke='#c99a50' stroke-width='1.4'/><path d='M60 48 L60 67 M48 41 L57 67 M72 41 L63 67' stroke='#e5bd78' stroke-width='1.3' fill='none'/><path d='M51 66 L60 58 L69 66 L65 77 L55 77 Z' fill='url(#tsdBootGold)' stroke='#f3d49a' stroke-width='1'/><path d='M55 78 L60 84 L65 78' fill='none' stroke='#e5bd78' stroke-width='1.5'/></svg><div class='tablet-power-brand'>TACTICAL SUPPLY DROPS</div><div class='tablet-power-subtitle'>PRIVATE AIR LOGISTICS</div><div class='tablet-power-status'>POWERING FIELD TERMINAL</div><div class='tablet-power-progress'><span></span></div></div></div>
+        <div class='housing-wear' aria-hidden='true'></div>
+        <div class='tablet-engraving' aria-hidden='true' title='Drag to move tablet'>TSD // FIELD TERMINAL</div>
+        <div class='tablet-link-indicator' aria-label='TSD wireless link waiting' title='Waiting for TSD communication'><span class='tablet-link-led'></span><span>TSD LINK</span><svg class='tablet-link-icon' viewBox='0 0 20 18' aria-hidden='true'><path d='M2 6 Q10 -1 18 6 M5 9 Q10 4 15 9 M8 12 Q10 10 12 12'/><circle cx='10' cy='15' r='1.5'/></svg></div>
+        <div class='tablet-function-bank' aria-hidden='true'><span class='tablet-function-label'>MODE</span><span class='tablet-mode-dial'></span><span class='tablet-function-key'>MAP</span><span class='tablet-function-key'>LOG</span></div>
+        <div class='tablet-control-bank'><span>VOL</span><button class='volume-button' type='button' data-volume='down' aria-label='Lower tablet sound volume' title='Lower tablet sound volume'>−</button><button class='volume-button' type='button' data-volume='up' aria-label='Raise tablet sound volume' title='Raise tablet sound volume'>+</button><span id='tablet-volume-level'>45%</span><span>BRT</span><button class='brightness-button' type='button' data-brightness='down' aria-label='Dim screen' title='Dim screen'>−</button><button class='brightness-button' type='button' data-brightness='up' aria-label='Brighten screen' title='Brighten screen'>+</button><span>MENU</span></div>
+        <button class='tablet-power-button' type='button' aria-label='Power off tablet' title='Power off tablet'></button>
+        <div class='tablet-status-light' aria-hidden='true'></div>
 
         <header class='header'>
             <svg class='header-flight-art' viewBox='0 0 520 150' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
@@ -1532,6 +2439,7 @@ namespace TacticalSupplyDrops.Overlay
             </div>
 
             <div class='header-right'>
+                <div class='rouble-wallet' title='Available currencies in your stash'><small>STASH BALANCE</small><span id='rouble-balance'>RUB ₽—</span><span id='dollar-balance'>USD $—</span><span id='euro-balance'>EUR €—</span></div>
                 <div class='division-label'>
                     AIR LOGISTICS DIVISION
                 </div>
@@ -1550,6 +2458,11 @@ namespace TacticalSupplyDrops.Overlay
                 CARGO
             </button>
 
+            <button class='main-nav-button' data-view='delivery'>
+                <svg viewBox='0 0 32 32' aria-hidden='true'><path d='M16 2 4 8v8c0 7 5 12 12 14 7-2 12-7 12-14V8L16 2Zm0 5 7 3.5v5.5c0 4.8-2.9 8.7-7 10.4-4.1-1.7-7-5.6-7-10.4v-5.5L16 7Z'/><path d='M11 16h10m-5-5v10' fill='none' stroke='#111' stroke-width='1.6'/></svg>
+                DELIVERY
+            </button>
+
             <button class='main-nav-button' data-view='procurement'>
                 <svg viewBox='0 0 32 32' aria-hidden='true'><path d='M3 4h4l3.2 16.2a3 3 0 0 0 3 2.4h13.1v-3H13.3l-.5-2.4h13.8L30 8H9L8.2 4H3Zm10 21a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm12 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z'/></svg>
                 PROCUREMENT
@@ -1558,6 +2471,10 @@ namespace TacticalSupplyDrops.Overlay
             <button class='main-nav-button' data-view='config'>
                 <svg viewBox='0 0 32 32' aria-hidden='true'><path d='M13 2h6l.8 3.2 2.5 1 2.8-1.7 4.2 4.2-1.7 2.8 1 2.5L32 15v6l-3.4.8-1 2.5 1.7 2.8-4.2 4.2-2.8-1.7-2.5 1L19 34h-6l-.8-3.4-2.5-1-2.8 1.7-4.2-4.2 1.7-2.8-1-2.5L0 21v-6l3.4-.8 1-2.5-1.7-2.8 4.2-4.2 2.8 1.7 2.5-1L13 2Zm3 9a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z'/></svg>
                 CONFIG
+            </button>
+            <button class='main-nav-button' data-view='device'>
+                <svg viewBox='0 0 32 32' aria-hidden='true'><path d='M7 3h18a3 3 0 0 1 3 3v20a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm1 4v16h16V7H8Zm6 19h4v1h-4v-1Z'/><path d='M11 11h10v2H11zm0 4h10v2H11z'/></svg>
+                DEVICE INFO
             </button>
         </nav>
         <div id='cargo-view' class='view-panel'>
@@ -1719,106 +2636,61 @@ namespace TacticalSupplyDrops.Overlay
                 </main>
 
         </div>
-        <div id='procurement-view' class='view-panel hidden'>
+        <div id='delivery-view' class='view-panel hidden'>
             <section class='section-heading'>
                 <div>
-                    <div class='eyebrow'>
-                        LOGISTICS OPERATIONS // 02
-                    </div>
-
-                    <div class='section-title'>
-                        PROCUREMENT
-                    </div>
-
-                    <div class='section-description'>
-                        Acquire specialist equipment through Tactical Supply Drops.
-                    </div>
+                    <div class='eyebrow'>LOGISTICS OPERATIONS // 02</div>
+                    <div class='section-title'>FIELD DELIVERY</div>
+                    <div class='section-description'>Authenticate the terminal and release an accepted cargo order to a nearby safe airdrop point.</div>
                 </div>
-
-                <div class='classification'>
-                    PRIVATE LOGISTICS NETWORK
+                <div class='classification'>SECURE FIELD LINK</div>
+            </section>
+            <section class='delivery-console'>
+                <div>
+                    <div class='delivery-console-title'>TACTICAL DISPATCH CONTROL</div>
+                    <div class='delivery-console-subtitle'>A short encrypted handshake confirms the order, triangulates your position, and tasks the aircraft. The plane selects the nearest valid delivery point.</div>
+                    <div class='delivery-cargo-card' style='margin-top:18px'>
+                        <div class='delivery-cargo-label'>ACCEPTED CARGO MANIFEST</div>
+                        <div id='delivery-cargo-value' class='delivery-cargo-value'>NO VERIFIED ORDER LOADED</div>
+                        <div id='delivery-order-reference' class='manifest-note'>Confirm a cargo manifest on Cargo, then dispatch it during raid.</div>
+                    </div>
+                    <div id='delivery-draft-card' class='delivery-cargo-card' style='margin-top:18px' hidden>
+                        <div class='delivery-cargo-label'>NEW CARGO AWAITING CONFIRMATION</div>
+                        <div id='delivery-draft-value' class='manifest-note'></div>
+                        <button id='review-delivery-draft' class='purchase-button' type='button'>REVIEW &amp; CONFIRM NEW MANIFEST</button>
+                        <div class='manifest-note'>Review your selection and confirm the delivery fee on Cargo.</div>
+                    </div>
+                    <div class='delivery-sequence-label' style='margin-top:20px'>DISPATCH TELEMETRY</div>
+                    <ol id='delivery-sequence' class='delivery-sequence'></ol>
+                    <div id='delivery-status' class='delivery-link-status' style='margin-top:12px'>STANDING BY FOR AN ACCEPTED ORDER</div>
+                </div>
+                <div class='delivery-action'>
+                    <div id='delivery-terminal-link' class='delivery-link-status'>FIELD TERMINAL LINK: CHECKING</div>
+                    <button id='confirm-delivery' class='purchase-button' type='button' disabled>CONFIRM CARGO DELIVERY</button>
+                    <div class='delivery-help'>Carry the TSD Field Terminal in your PMC inventory during raid. Cargo can be dispatched once per accepted order; vanilla airdrops keep their normal smoke.</div>
                 </div>
             </section>
-
+        </div>
+        <div id='procurement-view' class='view-panel hidden'>
+            <section class='section-heading'>
+                <div><div class='eyebrow'>PRIVATE SUPPLY NETWORK</div><div class='section-title'>TRADER PROCUREMENT</div>
+                <div class='section-description'>Source goods from your traders for the next cargo delivery.</div></div>
+                <div class='classification'>LIVE TRADER STOCK</div>
+            </section>
+            <div id='procurement-traders' class='procurement-traders' role='group' aria-label='Traders'></div>
             <section class='inventory-panel'>
-                <div class='panel-header'>
-                    <span class='panel-title'>
-                        AVAILABLE SUPPLIES
-                    </span>
+                <div class='panel-header procurement-toolbar'>
+                    <input id='procurement-search' placeholder='Search this trader’s stock...' aria-label='Search trader stock'/>
+                    <button id='procurement-refresh' class='purchase-button'>REFRESH STOCK</button>
+                    <button id='procurement-review-cargo' class='purchase-button'>REVIEW CARGO</button>
                 </div>
-
-                                <div class='procurement-product'>
-                    <div class='procurement-product-info'>
-                        <div class='procurement-product-name'>
-                            TSD ORANGE SIGNAL CARTRIDGE
-                        </div>
-
-                        <div class='procurement-product-description'>
-                            Specialized 26x75mm orange signal cartridge for Tactical Supply Drops operations.
-                        </div>
-
-                        <div class='procurement-product-price'>
-                            ₽15,000 <span>PER UNIT</span>
-                        </div>
-                    </div>
-
-                    <div class='procurement-purchase-controls'>
-                        <label for='cartridge-quantity'>
-                            QUANTITY
-                        </label>
-
-                        <input
-                            id='cartridge-quantity'
-                            type='number'
-                            min='1'
-                            step='1'
-                            value='1'
-                        />
-
-                        <div class='procurement-total'>
-                            TOTAL: <span id='cartridge-total'>₽15,000</span>
-                        </div>
-
-                        <button
-    id='purchase-cartridges'
-    class='purchase-button'
-    type='button'
->
-    PURCHASE CARTRIDGES
-</button>
-            </div>
+                <div class='procurement-note'>Trader prices, unlocks and limits apply. Bought goods are staged in your stash and selected in Cargo. Confirm the delivery fee there before dispatch.</div>
+                <div id='procurement-status' class='procurement-status' role='status'>CHOOSE A TRADER TO LOAD STOCK</div>
+                <div id='procurement-offers' class='procurement-offers'></div>
+                <div class='procurement-pagination'><span id='procurement-count'>0 OFFERS</span><button id='procurement-prev'>PREVIOUS</button><span id='procurement-page'>1 / 1</span><button id='procurement-next'>NEXT</button></div>
+            </section>
         </div>
 
-        <div
-            id='procurement-status'
-            class='procurement-status'
-        >
-            READY FOR PROCUREMENT
-        </div>
-
-    </section>
-
-    <section class='upcoming-panel'>
-        <div class='upcoming-heading'>
-            <div class='upcoming-title'>FUTURE CAPABILITIES // PROCUREMENT ROADMAP</div>
-            <div class='upcoming-label'>IN DEVELOPMENT</div>
-        </div>
-        <div class='upcoming-grid'>
-            <div class='upcoming-card'>
-                <strong>MISSION EQUIPMENT</strong>
-                <span>Specialist field equipment and operational supplies.</span>
-            </div>
-            <div class='upcoming-card'>
-                <strong>DIRECT TRADER SOURCING</strong>
-                <span>Request eligible goods through our private supply network.</span>
-            </div>
-            <div class='upcoming-card'>
-                <strong>EXPANDED AIR SERVICES</strong>
-                <span>Additional delivery options and logistics support.</span>
-            </div>
-        </div>
-    </section>
-</div>
         <div id='config-view' class='view-panel hidden'>
             <section class='section-heading'>
                 <div>
@@ -1840,71 +2712,43 @@ namespace TacticalSupplyDrops.Overlay
                 </div>
             </section>
 
-                       <section class='inventory-panel'>
-                <div class='panel-header'>
-                    <span class='panel-title'>
-                        OPERATIONAL PREFERENCES
-                    </span>
-
-                    <span class='eyebrow'>
-                        FUTURE EXPANSION
-                    </span>
-                </div>
-
-                <div style='padding: 48px 24px; text-align: center;'>
-                    <div style='
-                        font-size: 11px;
-                        letter-spacing: 3px;
-                        color: var(--accent);
-                        margin-bottom: 22px;
-                    '>
-                        TSD // SYSTEM DEVELOPMENT
-                    </div>
-
-                    <div style='
-                        font-size: 25px;
-                        font-weight: 800;
-                        letter-spacing: 3px;
-                        color: var(--text);
-                        margin-bottom: 10px;
-                    '>
-                        ADDITIONAL OPTIONS
-                    </div>
-
-                    <div style='
-                        font-size: 13px;
-                        font-weight: 800;
-                        letter-spacing: 4px;
-                        color: var(--accent);
-                        margin-bottom: 22px;
-                    '>
-                        COMING SOON
-                    </div>
-
-                    <div style='
-                        max-width: 480px;
-                        margin: 0 auto;
-                        color: var(--muted);
-                        font-size: 13px;
-                        line-height: 1.8;
-                    '>
-                        Additional operational controls, user preferences
-                        and system customization features are planned
-                        for future releases.
-                    </div>
-
-                    <div style='
-                        margin-top: 30px;
-                        font-size: 10px;
-                        letter-spacing: 2px;
-                        color: var(--muted);
-                    '>
-                        TACTICAL SUPPLY DROPS // PRIVATE AIR LOGISTICS
+                       <section class='inventory-panel tablet-config-panel'>
+                <div class='panel-header'><span class='panel-title'>TABLET CONTROLS</span><span class='eyebrow'>LOCAL PREFERENCE</span></div>
+                <div class='tablet-hotkey-setting'>
+                    <div class='tablet-hotkey-copy'><div class='tablet-hotkey-title'>OPEN / CLOSE TABLET</div><div class='tablet-hotkey-help'>Choose the keyboard key that opens or closes the TSD field terminal.</div></div>
+                    <div class='tablet-hotkey-actions'>
+                        <input id='tablet-hotkey-value' type='text' value='F9' readonly aria-label='Current tablet hotkey'/>
+                        <button id='tablet-hotkey-change' type='button'>CHANGE KEY</button>
+                        <button id='tablet-hotkey-cancel' class='hidden' type='button'>CANCEL</button>
                     </div>
                 </div>
+                <div id='tablet-hotkey-status' class='tablet-hotkey-status'>Current key: F9. This setting is saved with the TSD plugin configuration.</div>
+                <div class='tablet-sound-setting'><div><div class='tablet-hotkey-title'>TABLET SOUNDS</div><div class='tablet-hotkey-help'>Enable interface clicks, tab tones, order feedback, and quiet processor and drive activity while powered on.</div></div><button id='tablet-sounds-toggle' type='button' aria-pressed='true'>SOUNDS ON</button></div>
+                <div id='tablet-sound-status' class='tablet-hotkey-status'>Sounds enabled · Volume 45%</div>
+            </section>        </div>
+
+        <div id='device-view' class='view-panel hidden'>
+            <section class='section-heading'>
+                <div>
+                    <div class='eyebrow'>LOGISTICS OPERATIONS // 04</div>
+                    <div class='section-title'>DEVICE INFORMATION</div>
+                    <div class='section-description'>Terminal identity, firmware, and ownership record.</div>
+                </div>
+                <div class='classification'>PRIVATE LOGISTICS NETWORK</div>
+            </section>
+            <section class='inventory-panel tablet-about-panel'>
+                <div class='panel-header'><span class='panel-title'>DEVICE INFORMATION</span><span class='eyebrow'>SYSTEM RECORD // TSD-FT-01</span></div>
+                <div class='tablet-about-grid'>
+                    <div class='tablet-about-entry'><span>TERMINAL</span><strong>TSD FIELD TERMINAL</strong></div>
+                    <div class='tablet-about-entry'><span>FIRMWARE</span><strong>TSD FIELD OS // 0.2.0</strong></div>
+                    <div class='tablet-about-entry'><span>MOD VERSION</span><strong>2.0.0</strong></div>
+                    <div class='tablet-about-entry'><span>DEVICE ID</span><strong>TSD-FT-01-0047</strong></div>
+                    <div class='tablet-about-entry tablet-about-owner'><span>OPERATOR / OWNER</span><strong>TACTICAL SUPPLY DROPS PRIVATE LOGISTICS</strong></div>
+                    <div class='tablet-about-entry'><span>FOUNDER &amp; CEO</span><strong>NOMADTRIBALS</strong></div>
+                </div>
+                <div class='tablet-about-ip'><span>INTELLECTUAL PROPERTY</span><strong>© 2026 TACTICAL SUPPLY DROPS PRIVATE LOGISTICS. ALL RIGHTS RESERVED.</strong></div>
             </section>
         </div>
-
         <footer class='footer'>
             <span>
                 <span class='footer-accent'>TSD</span>
@@ -1918,19 +2762,331 @@ namespace TacticalSupplyDrops.Overlay
 
     </div>
 
-    
+
 <script>
+    const tabletSoundToggle = document.getElementById('tablet-sounds-toggle');
+    const tabletSoundStatus = document.getElementById('tablet-sound-status');
+    const tabletVolumeDisplay = document.getElementById('tablet-volume-level');
+    const tabletVolumeButtons = document.querySelectorAll('.volume-button');
+    const tabletStorage = { get(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch (_) {} } };
+    let tabletSoundEnabled = tabletStorage.get('tsd-tablet-sounds') !== 'false';
+    const savedTabletVolume = tabletStorage.get('tsd-tablet-volume');
+    let tabletSoundVolume = savedTabletVolume === null ? .5 : Number(savedTabletVolume);
+    if (!Number.isFinite(tabletSoundVolume)) tabletSoundVolume = .5;
+    tabletSoundVolume = Math.max(0, Math.min(1, tabletSoundVolume));
+    let tabletAudioContext = null;
+    let tabletHum = null;
+    let tabletActivityTimer = null;
+        let tabletVisible = false;
+    const tabletRoot = document.querySelector('.app');
+    const tabletPowerStatus = document.querySelector('.tablet-power-status');
+    let tabletSequenceTimers = [];
+
+    function getTabletAudioContext() {
+        if (!tabletAudioContext) {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return null;
+            try { tabletAudioContext = new AudioContextClass(); } catch (_) { return null; }
+        }
+        return tabletAudioContext;
+    }
+    let tabletNoiseBuffer = null;
+    function getTabletNoiseBuffer(context) {
+        if (tabletNoiseBuffer) return tabletNoiseBuffer;
+        const buffer = context.createBuffer(1, context.sampleRate * 2, context.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * .72 + (Math.random() * 2 - 1) * .28;
+        tabletNoiseBuffer = buffer;
+        return buffer;
+    }
+    function playTabletTone(context, frequency, delay, duration, level, type, endFrequency) {
+        const start = context.currentTime + delay;
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        const filter = context.createBiquadFilter();
+        oscillator.type = type || 'sine'; oscillator.frequency.setValueAtTime(frequency, start);
+        if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, start + duration);
+        filter.type = 'lowpass'; filter.frequency.setValueAtTime(2400, start);
+        oscillator.connect(filter); filter.connect(gain); gain.connect(context.destination);
+        gain.gain.setValueAtTime(.0001, start);
+        gain.gain.exponentialRampToValueAtTime(Math.max(.0002, level * tabletSoundVolume), start + .002);
+        gain.gain.exponentialRampToValueAtTime(.0001, start + duration);
+        oscillator.start(start); oscillator.stop(start + duration + .012);
+    }
+    function playTabletClick(context, delay, strength) {
+        const start = context.currentTime + delay;
+        const source = context.createBufferSource(); source.buffer = getTabletNoiseBuffer(context);
+        const filter = context.createBiquadFilter(); filter.type = 'bandpass'; filter.frequency.value = 2300; filter.Q.value = .62;
+        const gain = context.createGain(); source.connect(filter); filter.connect(gain); gain.connect(context.destination);
+        gain.gain.setValueAtTime(.0001, start);
+        gain.gain.exponentialRampToValueAtTime(Math.max(.0002, strength * tabletSoundVolume), start + .0015);
+        gain.gain.exponentialRampToValueAtTime(.0001, start + .022);
+        source.start(start); source.stop(start + .026);
+        playTabletTone(context, 145, delay, .024, .025, 'triangle', 88);
+    }
+    function playTabletScreenTap(context) {
+        const start = context.currentTime;
+        const source = context.createBufferSource(); source.buffer = getTabletNoiseBuffer(context);
+        const filter = context.createBiquadFilter(); filter.type = 'bandpass'; filter.frequency.value = 1750; filter.Q.value = .55;
+        const gain = context.createGain(); source.connect(filter); filter.connect(gain); gain.connect(context.destination);
+        gain.gain.setValueAtTime(.0001, start);
+        gain.gain.exponentialRampToValueAtTime(.052 * tabletSoundVolume, start + .001);
+        gain.gain.exponentialRampToValueAtTime(.0001, start + .018);
+        source.start(start); source.stop(start + .023);
+    }
+    function playTabletFunctionClick(context) {
+        playTabletDriveTexture(context, 0, .022, .038, 1450);
+        playTabletTone(context, 690, .004, .035, .014, 'sine', 520);
+    }
+    function playTabletDriveTexture(context, delay, duration, strength, centerFrequency) {
+        const start = context.currentTime + delay;
+        const source = context.createBufferSource(); source.buffer = getTabletNoiseBuffer(context);
+        const filter = context.createBiquadFilter(); filter.type = 'bandpass'; filter.frequency.value = centerFrequency; filter.Q.value = .8;
+        const gain = context.createGain(); source.connect(filter); filter.connect(gain); gain.connect(context.destination);
+        gain.gain.setValueAtTime(.0001, start);
+        gain.gain.exponentialRampToValueAtTime(Math.max(.0002, strength * tabletSoundVolume), start + .006);
+        gain.gain.exponentialRampToValueAtTime(.0001, start + duration);
+        source.start(start); source.stop(start + duration + .01);
+    }
+    function playTabletDiskWrite(context) {
+        const pulses = 2 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < pulses; i++) {
+            const delay = .008 + i * (.026 + Math.random() * .014);
+            playTabletDriveTexture(
+                context,
+                delay,
+                .012 + Math.random() * .012,
+                .026 + Math.random() * .012,
+                620 + Math.random() * 920);
+        }
+        if (Math.random() > .55) {
+            playTabletClick(context, .074 + Math.random() * .018, .018);
+        }
+    }
+    function playTabletDriveActivity() {
+        if (!tabletSoundEnabled || !tabletVisible || tabletSoundVolume <= 0) return;
+        const context = getTabletAudioContext(); if (!context || context.state !== 'running') return;
+        const passes = 2 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < passes; i++) {
+            const delay = i * (.035 + Math.random() * .04);
+            playTabletDriveTexture(context, delay, .025 + Math.random() * .035, .022 + Math.random() * .012, 520 + Math.random() * 760);
+        }
+        if (Math.random() > .62) playTabletDriveTexture(context, .19 + Math.random() * .08, .035, .014, 900 + Math.random() * 700);
+    }
+    function scheduleTabletActivity() {
+        if (tabletActivityTimer !== null || !tabletSoundEnabled || !tabletVisible || !tabletHum) return;
+        tabletActivityTimer = setTimeout(() => {
+            tabletActivityTimer = null;
+            if (!tabletSoundEnabled || !tabletVisible || !tabletHum) return;
+            playTabletDriveActivity();
+            scheduleTabletActivity();
+        }, 2600 + Math.random() * 3800);
+    }
+    function startTabletHum() {
+        if (!tabletSoundEnabled || !tabletVisible) return;
+        const context = getTabletAudioContext();
+        if (!context || tabletHum) return;
+        const begin = () => {
+            if (tabletHum || !tabletSoundEnabled || !tabletVisible) return;
+            const master = context.createGain(); master.gain.value = 1; master.connect(context.destination);
+            const motor = context.createOscillator(), fan = context.createOscillator();
+            const motorGain = context.createGain(), fanGain = context.createGain(), airGain = context.createGain();
+            motor.type = 'sine'; motor.frequency.value = 112;
+            fan.type = 'triangle'; fan.frequency.value = 365;
+            motorGain.gain.value = .0012 * tabletSoundVolume;
+            fanGain.gain.value = .0018 * tabletSoundVolume;
+            motor.connect(motorGain); fan.connect(fanGain); motorGain.connect(master); fanGain.connect(master);
+            const airflow = context.createBufferSource(); airflow.buffer = getTabletNoiseBuffer(context); airflow.loop = true;
+            const highpass = context.createBiquadFilter(), lowpass = context.createBiquadFilter();
+            highpass.type = 'highpass'; highpass.frequency.value = 180;
+            lowpass.type = 'lowpass'; lowpass.frequency.value = 1250;
+            airGain.gain.value = .008 * tabletSoundVolume;
+            airflow.connect(highpass); highpass.connect(lowpass); lowpass.connect(airGain); airGain.connect(master);
+            const lfo = context.createOscillator(), lfoDepth = context.createGain();
+            lfo.type = 'sine'; lfo.frequency.value = .12; lfoDepth.gain.value = 2.2; lfo.connect(lfoDepth); lfoDepth.connect(fan.detune);
+            motor.start(); fan.start(); airflow.start(); lfo.start();
+            tabletHum = { master, motor, fan, airflow, motorGain, fanGain, airGain, lfo };
+            scheduleTabletActivity();
+        };
+        if (context.state === 'suspended') context.resume().then(begin).catch(() => {}); else begin();
+    }    function stopTabletHum() {
+        if (!tabletHum || !tabletAudioContext) return;
+        const hum = tabletHum; tabletHum = null; const context = tabletAudioContext;
+        if (tabletActivityTimer !== null) { clearTimeout(tabletActivityTimer); tabletActivityTimer = null; }
+        hum.master.gain.cancelScheduledValues(context.currentTime); hum.master.gain.setTargetAtTime(.0001, context.currentTime, .08);
+        setTimeout(() => { try { hum.motor.stop(); hum.fan.stop(); hum.airflow.stop(); hum.lfo.stop(); hum.master.disconnect(); } catch (_) {} }, 500);
+    }
+    function updateTabletHumVolume() {
+        if (!tabletHum || !tabletAudioContext) return;
+        const now = tabletAudioContext.currentTime;
+        tabletHum.motorGain.gain.setTargetAtTime(.0012 * tabletSoundVolume, now, .04);
+        tabletHum.fanGain.gain.setTargetAtTime(.0018 * tabletSoundVolume, now, .04);
+        tabletHum.airGain.gain.setTargetAtTime(.008 * tabletSoundVolume, now, .04);
+    }    function syncTabletSoundUi() {
+        if (tabletSoundToggle) { tabletSoundToggle.textContent = tabletSoundEnabled ? 'SOUNDS ON' : 'SOUNDS OFF'; tabletSoundToggle.setAttribute('aria-pressed', tabletSoundEnabled ? 'true' : 'false'); }
+        if (tabletVolumeDisplay) tabletVolumeDisplay.textContent = Math.round(tabletSoundVolume * 100) + '%';
+        if (tabletSoundStatus) tabletSoundStatus.textContent = (tabletSoundEnabled ? 'Sounds enabled' : 'Sounds disabled') + ' · Volume ' + Math.round(tabletSoundVolume * 100) + '%';
+    }
+    function playTabletSound(kind) {
+        if (!tabletSoundEnabled || tabletSoundVolume <= 0) return;
+        const context = getTabletAudioContext(); if (!context) return;
+        const play = () => {
+            if (kind === 'screen-tap') playTabletScreenTap(context);
+            else if (kind === 'function') playTabletFunctionClick(context);
+            else if (kind === 'tab') {
+                playTabletFunctionClick(context);
+                playTabletTone(context, 620, .012, .035, .012, 'sine');
+            } else if (kind === 'submit') {
+                playTabletTone(context, 440, 0, .08, .035, 'triangle');
+                playTabletTone(context, 587, .065, .09, .031, 'triangle');
+                playTabletTone(context, 740, .14, .12, .028, 'sine');
+            } else if (kind === 'data-write') {
+                playTabletDiskWrite(context);
+            } else if (kind === 'power-up') {
+                /* A restrained relay clunk, rising power bed, and filtered comms sweep. */
+                playTabletClick(context, 0, .065);
+                playTabletTone(context, 78, .015, .78, .075, 'sine', 104);
+                playTabletTone(context, 146, .08, .48, .026, 'sine', 178);
+                const sweepStart = context.currentTime + .06;
+                const sweep = context.createBufferSource(); sweep.buffer = getTabletNoiseBuffer(context);
+                const sweepFilter = context.createBiquadFilter(); sweepFilter.type = 'bandpass'; sweepFilter.Q.value = .58;
+                sweepFilter.frequency.setValueAtTime(410, sweepStart);
+                sweepFilter.frequency.exponentialRampToValueAtTime(1480, sweepStart + .62);
+                const sweepGain = context.createGain(); sweep.connect(sweepFilter); sweepFilter.connect(sweepGain); sweepGain.connect(context.destination);
+                sweepGain.gain.setValueAtTime(.0001, sweepStart);
+                sweepGain.gain.exponentialRampToValueAtTime(.012 * tabletSoundVolume, sweepStart + .14);
+                sweepGain.gain.exponentialRampToValueAtTime(.0001, sweepStart + .72);
+                sweep.start(sweepStart); sweep.stop(sweepStart + .75);
+                playTabletClick(context, .93, .04);
+            } else if (kind === 'power-down') {
+                playTabletClick(context, 0, .075);
+                playTabletTone(context, 142, .025, .24, .028, 'sine', 78);
+                playTabletDriveTexture(context, .035, .16, .012, 630);
+            } else playTabletClick(context, 0, .14);
+            if (kind !== 'power-up' && kind !== 'power-down') startTabletHum();
+        };
+        if (context.state === 'suspended') context.resume().then(play).catch(() => {}); else play();
+    }    function clearTabletSequenceTimers() {
+        tabletSequenceTimers.forEach(timer => clearTimeout(timer));
+        tabletSequenceTimers = [];
+    }
+    function beginTabletStartup() {
+        if (!tabletRoot) return;
+        clearTabletSequenceTimers();
+        tabletVisible = true;
+        tabletRoot.classList.remove('tablet-shutting-down', 'tablet-booting');
+        void tabletRoot.offsetWidth;
+        tabletRoot.classList.add('tablet-booting');
+        if (tabletPowerStatus) tabletPowerStatus.textContent = 'POWERING FIELD TERMINAL';
+        playTabletSound('power-up');
+        tabletSequenceTimers.push(setTimeout(() => { if (tabletPowerStatus) tabletPowerStatus.textContent = 'HARDWARE CHECK // 24%'; }, 190));
+        tabletSequenceTimers.push(setTimeout(() => { if (tabletPowerStatus) tabletPowerStatus.textContent = 'LOADING LOGISTICS CACHE // 51%'; }, 485));
+        tabletSequenceTimers.push(setTimeout(() => { if (tabletPowerStatus) tabletPowerStatus.textContent = 'ESTABLISHING TSD LINK // 79%'; }, 860));
+        tabletSequenceTimers.push(setTimeout(() => { if (tabletPowerStatus) tabletPowerStatus.textContent = 'VERIFYING FIELD TERMINAL // 96%'; }, 1150));
+        tabletSequenceTimers.push(setTimeout(() => {
+            tabletRoot.classList.remove('tablet-booting');
+            if (tabletPowerStatus) tabletPowerStatus.textContent = 'SYSTEM READY';
+            if (tabletSoundEnabled) startTabletHum();
+        }, 1370));
+    }    function beginTabletShutdown() {
+        if (!tabletRoot || !tabletVisible || tabletRoot.classList.contains('tablet-shutting-down')) return;
+        clearTabletSequenceTimers();
+        tabletRoot.classList.remove('tablet-booting');
+        tabletRoot.classList.add('tablet-shutting-down');
+        if (tabletPowerStatus) tabletPowerStatus.textContent = 'POWERING DOWN';
+        stopTabletHum();
+        playTabletSound('power-down');
+        tabletSequenceTimers.push(setTimeout(() => {
+            tabletVisible = false;
+            if (window.overlay && window.overlay.send) window.overlay.send('tsd-power', 'hide');
+        }, 310));
+    }
+    window.overlay.beginTabletShutdown = beginTabletShutdown;    window.overlay.setTabletVisible = function(visible) {
+        if (visible) beginTabletStartup();
+        else { tabletVisible = false; clearTabletSequenceTimers(); stopTabletHum(); }
+    };    if (tabletSoundToggle) tabletSoundToggle.addEventListener('click', () => {
+        tabletSoundEnabled = !tabletSoundEnabled; tabletStorage.set('tsd-tablet-sounds', tabletSoundEnabled ? 'true' : 'false'); syncTabletSoundUi();
+        if (tabletSoundEnabled) startTabletHum(); else stopTabletHum();
+    });
+    tabletVolumeButtons.forEach(button => button.addEventListener('click', () => {
+        tabletSoundVolume = Math.max(0, Math.min(1, tabletSoundVolume + (button.dataset.volume === 'up' ? .1 : -.1)));
+        tabletSoundVolume = Math.round(tabletSoundVolume * 10) / 10; tabletStorage.set('tsd-tablet-volume', String(tabletSoundVolume)); syncTabletSoundUi(); updateTabletHumVolume();
+    }));
+    syncTabletSoundUi();
+    tabletRoot.addEventListener('pointerdown', event => {
+        if (!tabletVisible || tabletRoot.classList.contains('tablet-booting') || tabletRoot.classList.contains('tablet-shutting-down')) return;
+        if (event.target.closest('.corner-guard,.bezel-rail,.bezel-fastener,.tablet-grip,.tablet-control-bank,.tablet-function-bank,.tablet-engraving,.tablet-link-indicator,.tablet-resize-handle,.tablet-power-screen,.tablet-power-button')) return;
+        const rect = tabletRoot.getBoundingClientRect(), style = getComputedStyle(tabletRoot);
+        const left = parseFloat(style.borderLeftWidth) || 0, right = parseFloat(style.borderRightWidth) || 0;
+        const top = parseFloat(style.borderTopWidth) || 0, bottom = parseFloat(style.borderBottomWidth) || 0;
+        if (event.clientX < rect.left + left || event.clientX > rect.right - right || event.clientY < rect.top + top || event.clientY > rect.bottom - bottom) return;
+        playTabletSound('screen-tap');
+    }, true);
+    document.addEventListener('click', event => {
+        const action = event.target.closest('.app button, .app input, .app select');
+        if (!action || action.classList.contains('tablet-power-button')) return;
+        if (action.classList.contains('volume-button') || action.classList.contains('brightness-button')) playTabletSound('click');
+        else if (action.classList.contains('main-nav-button')) playTabletSound('tab');
+        else playTabletSound('function');
+    }, true);    function postTabletGesture(mode, corner, dx, dy) {
+        if (window.overlay && window.overlay.send) window.overlay.send('tsd-window-gesture', JSON.stringify({ mode, corner, dx, dy }));
+    }
+    function makeTabletGestureHandle(handle, mode, corner) {
+        handle.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            event.preventDefault(); event.stopPropagation();
+            let lastX = event.screenX, lastY = event.screenY, finished = false;
+            const pointerId = event.pointerId;
+            try { handle.setPointerCapture(pointerId); } catch (_) {}
+            const move = moveEvent => {
+                if (moveEvent.pointerId !== pointerId) return;
+                const dx = Math.round(moveEvent.screenX - lastX), dy = Math.round(moveEvent.screenY - lastY);
+                lastX = moveEvent.screenX; lastY = moveEvent.screenY;
+                if (dx || dy) postTabletGesture(mode, corner, dx, dy);
+            };
+            const finish = finishEvent => {
+                if (finishEvent.pointerId !== pointerId || finished) return;
+                finished = true;
+                handle.removeEventListener('pointermove', move);
+                handle.removeEventListener('pointerup', finish);
+                handle.removeEventListener('pointercancel', finish);
+                postTabletGesture('end', corner, 0, 0);
+            };
+            handle.addEventListener('pointermove', move);
+            handle.addEventListener('pointerup', finish);
+            handle.addEventListener('pointercancel', finish);
+        });
+    }
+    const tabletMoveHandle = document.querySelector('.tablet-engraving');
+    if (tabletMoveHandle) makeTabletGestureHandle(tabletMoveHandle, 'move', '');
+    document.querySelectorAll('.tablet-resize-handle').forEach(handle => makeTabletGestureHandle(handle, 'resize', handle.dataset.corner));
+    const tabletPowerButton = document.querySelector('.tablet-power-button');
+    if (tabletPowerButton) tabletPowerButton.addEventListener('click', () => beginTabletShutdown());
+    const tabletScreen = document.querySelector('.app');
+    const tabletBrightnessButtons = document.querySelectorAll('.brightness-button');
+    let tabletBrightness = .55;
+    if (tabletScreen) tabletScreen.style.setProperty('--tsd-display-brightness', tabletBrightness.toFixed(2));
+    tabletBrightnessButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            tabletBrightness = Math.max(.55, Math.min(1.25, tabletBrightness + (button.dataset.brightness === 'up' ? .1 : -.1)));
+            if (tabletScreen) tabletScreen.style.setProperty('--tsd-display-brightness', tabletBrightness.toFixed(2));
+        });
+    });
+
     let stashItems = [];
 // Main interface navigation
 const mainNavButtons = document.querySelectorAll('.main-nav-button');
 
 const mainViews = {
     cargo: document.getElementById('cargo-view'),
+    delivery: document.getElementById('delivery-view'),
     procurement: document.getElementById('procurement-view'),
-    config: document.getElementById('config-view')
+    config: document.getElementById('config-view'),
+    device: document.getElementById('device-view')
 };
 
 function switchMainView(viewName) {
+    if (viewName === 'procurement') requestProcurementCatalog();
     Object.entries(mainViews).forEach(([name, view]) => {
         if (view) {
             view.classList.toggle('hidden', name !== viewName);
@@ -1950,109 +3106,197 @@ mainNavButtons.forEach(button => {
         switchMainView(button.dataset.view);
     });
 });
-// Procurement cartridge price calculation
-const cartridgePrice = 15000;
-
-const cartridgeQuantityInput =
-    document.getElementById('cartridge-quantity');
-
-const cartridgeTotalDisplay =
-    document.getElementById('cartridge-total');
-
-function updateCartridgeTotal() {
-    const quantity = Number(cartridgeQuantityInput.value);
-
-    if (
-        !Number.isSafeInteger(quantity) ||
-        quantity < 1
-    ) {
-        cartridgeTotalDisplay.textContent = 'INVALID QUANTITY';
-        return;
-    }
-
-    const total = quantity * cartridgePrice;
-
-    if (!Number.isSafeInteger(total)) {
-        cartridgeTotalDisplay.textContent = 'INVALID QUANTITY';
-        return;
-    }
-
-    cartridgeTotalDisplay.textContent =
-        '₽' + total.toLocaleString('en-CA');
-}
-
-cartridgeQuantityInput.addEventListener(
-    'input',
-    updateCartridgeTotal
-);
-// Procurement purchase submission
 let procurementPending = false;
-
-const purchaseCartridgesButton =
-    document.getElementById('purchase-cartridges');
-
-const procurementStatus =
-    document.getElementById('procurement-status');
-
-function updateProcurementStatus(message) {
-    if (procurementStatus) {
-        procurementStatus.textContent = message;
-    }
+let procurementCatalog = { traders: [], offers: [] };
+let procurementTraderId = '';
+let procurementPage = 0;
+let procurementLoading = false;
+const procurementStatus = document.getElementById('procurement-status');
+const procurementTabs = document.getElementById('procurement-traders');
+const procurementOffers = document.getElementById('procurement-offers');
+const procurementSearch = document.getElementById('procurement-search');
+function updateProcurementStatus(message) { if (procurementStatus) procurementStatus.textContent = message; }
+function updateRoubleBalance(value) {
+    if (!Number.isSafeInteger(value) || value < 0) return;
+    const balance = document.getElementById('rouble-balance');
+    if (balance) balance.textContent = 'RUB ₽' + value.toLocaleString('en-CA');
 }
-
-purchaseCartridgesButton.addEventListener('click', () => {
-    if (procurementPending) {
+function updateWalletBalances(wallet) {
+    if (!wallet) return;
+    [['rouble-balance', 'RUB ₽', wallet.roubles], ['dollar-balance', 'USD $', wallet.dollars], ['euro-balance', 'EUR €', wallet.euros]].forEach(([id, label, value]) => {
+        const element = document.getElementById(id);
+        if (element && Number.isSafeInteger(value) && value >= 0) element.textContent = label + value.toLocaleString('en-CA');
+    });
+}
+function procurementElement(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+}
+function requestProcurementCatalog(traderId) {
+    if (procurementPending) return;
+    if (traderId !== undefined) procurementTraderId = traderId;
+    procurementLoading = true;
+    procurementPage = 0;
+    updateProcurementStatus('LOADING TRADER STOCK...');
+    renderProcurementOffers();
+    window.overlay.send('tsd-procurement-refresh', JSON.stringify({ TraderId: procurementTraderId }));
+}
+window.overlay.onProcurementCatalogReceived = function(data) {
+    procurementLoading = false;
+    if (!data || !data.success) {
+        updateProcurementStatus((data && data.message) || 'TRADER STOCK UNAVAILABLE — TRY REFRESH');
+        renderProcurementOffers();
         return;
     }
-
-    const quantity = Number(cartridgeQuantityInput.value);
-
-    if (!Number.isSafeInteger(quantity) || quantity < 1) {
-        updateProcurementStatus('PLEASE ENTER A VALID QUANTITY');
+    procurementCatalog = data;
+    procurementTraderId = data.traderId;
+    updateRoubleBalance(data.balanceRoubles);
+    updateWalletBalances(data.wallet);
+    procurementTabs.replaceChildren();
+    (data.traders || []).forEach(trader => {
+        const button = procurementElement('button', 'procurement-trader' + (trader.id === procurementTraderId ? ' active' : ''), trader.name);
+        button.type = 'button';
+        const level = procurementElement('small', '', trader.unlocked ? 'LL ' + trader.loyalty : 'LOCKED');
+        button.appendChild(level);
+        button.addEventListener('click', () => { if (!procurementPending) requestProcurementCatalog(trader.id); });
+        procurementTabs.appendChild(button);
+    });
+    updateProcurementStatus(data.message || 'LIVE TRADER STOCK — NORMAL PRICES AND PURCHASE LIMITS APPLY');
+    renderProcurementOffers();
+};
+function procurementCost(scheme, quantity) {
+    return (scheme.costs || []).map(cost => {
+        const amount = Math.ceil(cost.count * quantity).toLocaleString('en-CA');
+        const symbols = { RUB: '₽', USD: '$', EUR: '€' };
+        return symbols[cost.currencyCode] ? cost.currencyCode + ' ' + symbols[cost.currencyCode] + amount : amount + ' ' + cost.name;
+    }).join(' + ');
+}
+function renderProcurementOffers() {
+    procurementOffers.replaceChildren();
+    if (procurementLoading) {
+        procurementOffers.appendChild(procurementElement('div', 'procurement-empty', 'Reading the trader’s current offers...'));
         return;
     }
-
-    const total = quantity * cartridgePrice;
-
-    if (
-        !Number.isSafeInteger(total) ||
-        total > 2147483647
-    ) {
-        updateProcurementStatus('PURCHASE TOTAL EXCEEDS THE ALLOWED LIMIT');
-        return;
+    const query = procurementSearch.value.trim().toLocaleLowerCase();
+    const matching = (procurementCatalog.offers || []).filter(offer =>
+        !query || (offer.name + ' ' + offer.category).toLocaleLowerCase().includes(query))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const pages = Math.max(1, Math.ceil(matching.length / 40));
+    procurementPage = Math.min(procurementPage, pages - 1);
+    document.getElementById('procurement-count').textContent = matching.length + ' OFFERS';
+    document.getElementById('procurement-page').textContent = (procurementPage + 1) + ' / ' + pages;
+    document.getElementById('procurement-prev').disabled = procurementPage === 0;
+    document.getElementById('procurement-next').disabled = procurementPage >= pages - 1;
+    if (!matching.length) {
+        procurementOffers.appendChild(procurementElement('div', 'procurement-empty',
+            procurementCatalog.message || (query ? 'No matching offers from this trader.' : 'No unlocked offers available. Choose another trader or refresh after restock.')));
     }
-
-    const requestId =
-        Date.now().toString() + '-' +
-        Math.random().toString(36).substring(2, 10);
-
-    const payload = {
-    data: [
-        {
-            Action: ""TacticalSupplyDropsPurchaseCartridges"",
-            RequestId: requestId,
-            Quantity: quantity
+    matching.slice(procurementPage * 40, (procurementPage + 1) * 40).forEach(offer => {
+        const card = procurementElement('article', 'procurement-offer');
+        const icon = procurementElement('img', 'procurement-offer-icon');
+        icon.alt = ''; icon.loading = 'lazy'; icon.src = offer.iconUrl;
+        icon.addEventListener('error', () => { icon.style.visibility = 'hidden'; });
+        card.appendChild(icon);
+        const info = procurementElement('div', 'procurement-offer-info');
+        info.appendChild(procurementElement('div', 'procurement-product-name', offer.name));
+        const availability = (offer.stock < 0 ? 'IN STOCK' : 'STOCK ' + offer.stock.toLocaleString('en-CA'))
+            + (offer.remaining < 0 ? '' : ' · LIMIT LEFT ' + offer.remaining);
+        info.appendChild(procurementElement('div', 'procurement-offer-meta', offer.category + ' · ' + availability));
+        const schemes = offer.schemes || [];
+        const schemePicker = procurementElement('select', 'procurement-scheme');
+        schemes.forEach((scheme, index) => {
+            const option = procurementElement('option', '', procurementCost(scheme, 1));
+            option.value = String(index); schemePicker.appendChild(option);
+        });
+        info.appendChild(schemePicker);
+        card.appendChild(info);
+        const controls = procurementElement('div', 'procurement-offer-controls');
+        const quantity = procurementElement('input', 'procurement-quantity');
+        quantity.type = 'number'; quantity.min = '1'; quantity.step = '1'; quantity.value = '1';
+        quantity.setAttribute('aria-label', 'Quantity of ' + offer.name);
+        let maximum = 1000000;
+        if (offer.stock >= 0) maximum = Math.min(maximum, Math.floor(offer.stock));
+        if (offer.remaining >= 0) maximum = Math.min(maximum, offer.remaining);
+        quantity.max = String(Math.max(0, maximum));
+        const total = procurementElement('div', 'procurement-offer-total');
+        const buy = procurementElement('button', 'purchase-button', 'BUY FOR CARGO');
+        buy.type = 'button';
+        function updateOffer() {
+            const amount = Number(quantity.value);
+            const scheme = schemes[Number(schemePicker.value)];
+            const valid = Number.isSafeInteger(amount) && amount >= 1 && amount <= maximum && scheme;
+            total.textContent = valid ? procurementCost(scheme, amount) : 'ENTER A VALID QUANTITY';
+            buy.disabled = procurementPending || !valid || !scheme.supported;
+            if (scheme && !scheme.supported) buy.textContent = 'USE TRADER ITEM PICKER';
+            else buy.textContent = maximum < 1 ? 'UNAVAILABLE' : 'BUY FOR CARGO';
         }
-    ]
+        quantity.addEventListener('input', updateOffer);
+        schemePicker.addEventListener('change', updateOffer);
+        buy.addEventListener('click', () => {
+            if (procurementPending || orderPending) return;
+            const amount = Number(quantity.value);
+            const scheme = schemes[Number(schemePicker.value)];
+            if (!Number.isSafeInteger(amount) || amount < 1 || amount > maximum || !scheme || !scheme.supported) return;
+            const requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 12);
+            procurementPending = true;
+            updateProcurementStatus('PURCHASING FROM TRADER...');
+            renderProcurementOffers();
+            window.overlay.send('tsd-procurement-purchase', JSON.stringify({ data: [{
+                Action: 'TacticalSupplyDropsProcureTraderItem', RequestId: requestId,
+                TraderId: procurementTraderId, OfferId: offer.id, SchemeIndex: scheme.index,
+                PriceToken: scheme.token, Quantity: amount
+            }] }));
+        });
+        controls.appendChild(quantity); controls.appendChild(total); controls.appendChild(buy);
+        card.appendChild(controls); procurementOffers.appendChild(card); updateOffer();
+    });
+}
+procurementSearch.addEventListener('input', () => { procurementPage = 0; renderProcurementOffers(); });
+document.getElementById('procurement-refresh').addEventListener('click', () => requestProcurementCatalog());
+document.getElementById('procurement-review-cargo').addEventListener('click', () => switchMainView('cargo'));
+document.getElementById('procurement-prev').addEventListener('click', () => { procurementPage--; renderProcurementOffers(); });
+document.getElementById('procurement-next').addEventListener('click', () => { procurementPage++; renderProcurementOffers(); });
+window.overlay.onProcurementStatusReceived = function(message) {
+    updateProcurementStatus(message);
+    if (message === 'PURCHASE REQUEST FAILED') { procurementPending = false; renderProcurementOffers(); }
+};
+window.overlay.onProcurementResponseReceived = function(responseJson) {
+    procurementPending = false;
+    let message = 'PURCHASE COULD NOT BE VERIFIED — REFRESH BEFORE RETRYING';
+    try {
+        const response = JSON.parse(responseJson);
+        if (!response.transportSuccess) message = response.message || message;
+        else {
+            const server = JSON.parse(response.serverResponse);
+            const result = server.data || server;
+            if (server.err) message = server.errmsg || message;
+            else if (result.warnings && result.warnings.length) message = result.warnings.map(x => x.errmsg || x.errorMessage || x.ErrorMessage || 'Trade declined').join(' · ');
+            else if (result.tsdProcurement && result.tsdProcurement.success) {
+                updateRoubleBalance(result.tsdProcurement.balanceRoubles);
+                updateWalletBalances(result.tsdProcurement.wallet);
+                message = 'PURCHASED — ADDED TO YOUR NEXT CARGO MANIFEST';
+            }
+        }
+    } catch (error) { console.error('Invalid trader purchase response', error); }
+    requestProcurementCatalog();
+    updateProcurementStatus(message);
+    window.overlay.send('tsd-refresh-stash', 'refresh');
+    renderProcurementOffers();
 };
 
-    procurementPending = true;
-
-    purchaseCartridgesButton.disabled = true;
-    purchaseCartridgesButton.textContent = 'PROCESSING...';
-
-    updateProcurementStatus('SUBMITTING PURCHASE REQUEST...');
-
-    window.overlay.send(
-        'tsd-purchase-cartridges',
-        JSON.stringify(payload)
-    );
-});
+    let orderPending = false;
+    let activeDeliveryOrder = null;
+    let deliveryTerminalAccess = false;
+    let deliveryInRaid = false;
+    let deliveryDispatchPending = false;
+    let lastDeliverySequence = 0;
     let selectedItems = {};
 
     // Inventory navigation
     // Inventory navigation
-const stashRootParentId = '664115f68b8ae85875060b39';
+let stashRootParentId = null;
 let currentContainerId = stashRootParentId;
 let containerHistory = [];
     const statusText =
@@ -2200,12 +3444,72 @@ if (refreshStashButton) {
         return stashItems.find(item => item.Id === id);
     }
 
+    const hotkeyInput = document.getElementById('tablet-hotkey-value');
+    const hotkeyChangeButton = document.getElementById('tablet-hotkey-change');
+    const hotkeyCancelButton = document.getElementById('tablet-hotkey-cancel');
+    const hotkeyStatus = document.getElementById('tablet-hotkey-status');
+    let isCapturingTabletHotkey = false;
+    function setHotkeyCapture(active) {
+        isCapturingTabletHotkey = active;
+        if (hotkeyChangeButton) hotkeyChangeButton.textContent = active ? 'PRESS A KEY' : 'CHANGE KEY';
+        if (hotkeyCancelButton) hotkeyCancelButton.classList.toggle('hidden', !active);
+        if (hotkeyStatus) hotkeyStatus.textContent = active ? 'Press the key you want to use. The setting will be saved automatically.' : 'Choose a key to open or close the TSD field terminal.';
+    }
+    if (hotkeyChangeButton) hotkeyChangeButton.addEventListener('click', () => {
+        setHotkeyCapture(true);
+        if (window.overlay && window.overlay.send) window.overlay.send('tsd-hotkey-capture', 'begin');
+    });
+    if (hotkeyCancelButton) hotkeyCancelButton.addEventListener('click', () => {
+        setHotkeyCapture(false);
+        if (window.overlay && window.overlay.send) window.overlay.send('tsd-hotkey-cancel', 'cancel');
+    });
+    function unityKeyName(event) {
+        const code = event.code;
+        if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+        if (/^Digit[0-9]$/.test(code)) return 'Alpha' + code.slice(5);
+        if (/^Numpad[0-9]$/.test(code)) return 'Keypad' + code.slice(6);
+        if (/^F([1-9]|1[0-2])$/.test(code)) return code;
+        const names = {Escape:'Escape',Space:'Space',Tab:'Tab',Enter:'Return',Backspace:'Backspace',Delete:'Delete',Insert:'Insert',Home:'Home',End:'End',PageUp:'PageUp',PageDown:'PageDown',ArrowUp:'UpArrow',ArrowDown:'DownArrow',ArrowLeft:'LeftArrow',ArrowRight:'RightArrow',ControlLeft:'LeftControl',ControlRight:'RightControl',ShiftLeft:'LeftShift',ShiftRight:'RightShift',AltLeft:'LeftAlt',AltRight:'RightAlt',Minus:'Minus',Equal:'Equals',BracketLeft:'LeftBracket',BracketRight:'RightBracket',Backslash:'Backslash',Semicolon:'Semicolon',Quote:'Quote',Backquote:'BackQuote',Comma:'Comma',Period:'Period',Slash:'Slash',NumpadAdd:'KeypadPlus',NumpadSubtract:'KeypadMinus',NumpadMultiply:'KeypadMultiply',NumpadDivide:'KeypadDivide',NumpadDecimal:'KeypadPeriod'};
+        return names[code] || null;
+    }
+    document.addEventListener('keydown', event => {
+        if (!isCapturingTabletHotkey) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const keyName = unityKeyName(event);
+        if (!keyName) {
+            if (hotkeyStatus) hotkeyStatus.textContent = 'That key is not supported. Try a letter, number, function key, or arrow key.';
+            return;
+        }
+        setHotkeyCapture(false);
+        if (hotkeyInput) hotkeyInput.value = keyName;
+        if (hotkeyStatus) hotkeyStatus.textContent = 'Saving key setting...';
+        if (window.overlay && window.overlay.send) window.overlay.send('tsd-hotkey-set', keyName);
+    }, true);
+    window.overlay.onTabletHotkeyLoaded = key => { if (hotkeyInput) hotkeyInput.value = key; };
+    window.overlay.onTabletHotkeySaved = key => {
+        if (hotkeyInput) hotkeyInput.value = key;
+        if (hotkeyStatus) hotkeyStatus.textContent = 'Saved. Press ' + key + ' to open or close the tablet.';
+    };
+    window.overlay.onTabletHotkeyError = () => {
+        if (hotkeyStatus) hotkeyStatus.textContent = 'That key could not be saved. Choose another key.';
+    };    const tabletLinkIndicator = document.querySelector('.tablet-link-indicator');
     function updateStatus(message) {
         statusText.textContent = message;
+        if (!tabletLinkIndicator) return;
+        if (message.includes('COMMUNICATION CONFIRMED')) {
+            tabletLinkIndicator.classList.add('is-connected');
+            tabletLinkIndicator.setAttribute('aria-label', 'TSD wireless link connected');
+            tabletLinkIndicator.title = 'TSD communication confirmed';
+        } else if (message.includes('ERROR READING STASH DATA') || message.includes('COMMUNICATION LOST')) {
+            tabletLinkIndicator.classList.remove('is-connected');
+            tabletLinkIndicator.setAttribute('aria-label', 'TSD wireless link unavailable');
+            tabletLinkIndicator.title = 'TSD communication unavailable';
+        }
     }
 
     // Determine whether an item contains other items.
-    
+
 function isContainer(item) {
     if (!item || !item.Id) {
         return false;
@@ -2218,7 +3522,7 @@ function isContainer(item) {
     );
 }
 
-    
+
 
     function getContainerName(id) {
         const container = getItemById(id);
@@ -2229,7 +3533,7 @@ function isContainer(item) {
     }
 
     // Open a container and display its contents.
-    
+
 function openContainer(item) {
     if (!item || !item.Id || !isContainer(item)) {
         return;
@@ -2257,7 +3561,7 @@ function openContainer(item) {
 
     backButton.addEventListener('click', goBack);
 
-  
+
 function updateNavigation() {
     if (
         currentContainerId === null ||
@@ -2420,12 +3724,12 @@ function updateNavigation() {
             'item-card' + (selected ? ' selected' : '');
 
         card.addEventListener('click', () => {
-            if (container && !searchMode) {
-                openContainer(item);
-            } else {
-                toggleItemSelection(item);
-            }
-        });
+    if (container) {
+        openContainer(item);
+    } else {
+        toggleItemSelection(item);
+    }
+});
 
         card.appendChild(createItemImage(item, 'item-image'));
 
@@ -2528,7 +3832,7 @@ function updateNavigation() {
         return card;
     }
 
- 
+
 let activeCategory = 'ALL';
 let activeSort = 'name-asc';
 
@@ -2558,7 +3862,7 @@ function sortInventoryItems(items) {
         }
     });
 }
-   
+
 
 
 function displayItems() {
@@ -2797,9 +4101,10 @@ document.querySelectorAll('.category-button').forEach(button => {
 
         selectedValue.textContent =
             '₽' + formatNumber(getSelectedBaseValue());
+        updateDeliveryControls();
     }
 
-    
+
 function loadStash(data) {
     if (
         !data ||
@@ -2811,6 +4116,13 @@ function loadStash(data) {
     }
 
     stashItems = data.items;
+    stashRootParentId = data.stashRootId || null;
+    updateRoubleBalance(data.balanceRoubles);
+    updateWalletBalances(data.wallet);
+    (data.procurementCargo || []).forEach(selection => {
+        const item = stashItems.find(x => x.Id === selection.itemId);
+        if (item) selectedItems[item.Id] = Math.min(getMaxQuantity(item), Math.max(selectedItems[item.Id] || 0, selection.quantity));
+    });
 
     // Use the confirmed stash root ID.
     currentContainerId = stashRootParentId;
@@ -2845,7 +4157,171 @@ function loadStash(data) {
 
     // ORDER SUBMISSION
 
-    let orderPending = false;
+    function hasUnconfirmedCargo() {
+        return Object.keys(selectedItems).some(id => !!getItemById(id));
+    }
+    function shouldReviewCargo() {
+        return hasUnconfirmedCargo() && (!activeDeliveryOrder || !activeDeliveryOrder.available || activeDeliveryOrder.alreadyDispatched);
+    }
+    function reviewDeliveryDraft() {
+        switchMainView('cargo');
+        updateOrderStatus('NEW CARGO SELECTED — REVIEW YOUR MANIFEST AND CONFIRM THE DELIVERY FEE');
+        const submit = document.getElementById('submit-order');
+        if (submit) { submit.scrollIntoView({ block: 'center' }); submit.focus(); }
+    }
+    document.getElementById('review-delivery-draft').addEventListener('click', reviewDeliveryDraft);
+    function updateDeliveryControls() {
+        const draft = document.getElementById('delivery-draft-card');
+        if (draft) draft.hidden = !hasUnconfirmedCargo();
+        const draftValue = document.getElementById('delivery-draft-value');
+        if (draftValue) draftValue.textContent = Object.keys(selectedItems).map(id => {
+            const item = getItemById(id);
+            return item ? selectedItems[id] + ' × ' + cleanItemName(item.Name) : '';
+        }).filter(Boolean).join(' • ');
+        const cargoValue = document.getElementById('delivery-cargo-value');
+        if (cargoValue && activeDeliveryOrder && activeDeliveryOrder.alreadyDispatched) cargoValue.textContent = 'PREVIOUS ORDER DISPATCHED';
+        const button = document.getElementById('confirm-delivery');
+        const link = document.getElementById('delivery-terminal-link');
+        if (link) {
+            link.textContent = !deliveryTerminalAccess
+                ? 'FIELD TERMINAL LINK: NOT DETECTED'
+                : deliveryInRaid
+                    ? 'FIELD TERMINAL LINK: SECURE / IN RAID'
+                    : 'FIELD TERMINAL LINK: READY / ENTER RAID TO DISPATCH';
+            link.classList.toggle('connected', deliveryTerminalAccess && deliveryInRaid);
+        }
+        if (button) {
+            const unavailable = !activeDeliveryOrder ||
+                !activeDeliveryOrder.available ||
+                !deliveryTerminalAccess ||
+                !deliveryInRaid ||
+                deliveryDispatchPending ||
+                activeDeliveryOrder.alreadyDispatched;
+            button.disabled = shouldReviewCargo() ? false : unavailable;
+            button.textContent = shouldReviewCargo() ? 'REVIEW NEW CARGO MANIFEST' : activeDeliveryOrder && activeDeliveryOrder.alreadyDispatched
+                ? 'ORDER ALREADY DISPATCHED'
+                : deliveryDispatchPending
+                    ? 'DISPATCH SEQUENCE ACTIVE'
+                    : 'CONFIRM CARGO DELIVERY';
+        }
+    }
+
+    function confirmCargoDelivery() {
+        if (shouldReviewCargo()) { reviewDeliveryDraft(); return; }
+        if (!activeDeliveryOrder || !activeDeliveryOrder.available ||
+            !deliveryTerminalAccess || !deliveryInRaid ||
+            deliveryDispatchPending || activeDeliveryOrder.alreadyDispatched) return;
+
+        const requestId = Date.now().toString() + '-' +
+            Math.random().toString(36).substring(2, 9);
+        deliveryDispatchPending = true;
+        lastDeliverySequence = 0;
+        const sequence = document.getElementById('delivery-sequence');
+        if (sequence) sequence.replaceChildren();
+        const status = document.getElementById('delivery-status');
+        if (status) status.textContent = 'INITIALIZING SECURE DISPATCH LINK';
+        updateDeliveryControls();
+        playTabletSound('function');
+        if (window.overlay && window.overlay.send) {
+            window.overlay.send('tsd-dispatch-delivery', JSON.stringify({
+                RequestId: requestId,
+                OrderId: activeDeliveryOrder.orderId
+            }));
+        }
+    }
+
+    const confirmDeliveryButton = document.getElementById('confirm-delivery');
+    if (confirmDeliveryButton) {
+        confirmDeliveryButton.addEventListener('click', confirmCargoDelivery);
+    }
+
+    window.overlay.onTabletAccessReceived = function(state) {
+        deliveryTerminalAccess = !!(state && state.hasAccess);
+        deliveryInRaid = !!(state && state.inRaid);
+        updateDeliveryControls();
+    };
+
+    window.overlay.onActiveCargoReceived = function(cargo) {
+        const newOrder = !activeDeliveryOrder ||
+            !cargo || activeDeliveryOrder.orderId !== cargo.orderId;
+        activeDeliveryOrder = cargo || null;
+        const value = document.getElementById('delivery-cargo-value');
+        const reference = document.getElementById('delivery-order-reference');
+        if (value) {
+            value.textContent = activeDeliveryOrder && activeDeliveryOrder.available
+                ? activeDeliveryOrder.itemCount + ' CARGO LINE' +
+                    (activeDeliveryOrder.itemCount === 1 ? '' : 'S') + ' READY'
+                : 'NO VERIFIED ORDER LOADED';
+        }
+        if (reference) {
+            reference.textContent = activeDeliveryOrder && activeDeliveryOrder.available
+                ? 'ORDER ' + activeDeliveryOrder.orderId
+                : 'Confirm a cargo manifest on Cargo, then dispatch it during raid.';
+        }
+        if (newOrder) {
+            deliveryDispatchPending = false;
+            lastDeliverySequence = 0;
+            const sequence = document.getElementById('delivery-sequence');
+            if (sequence) sequence.replaceChildren();
+            const status = document.getElementById('delivery-status');
+            if (status) status.textContent = 'STANDING BY FOR SECURE DISPATCH';
+        }
+        if (activeDeliveryOrder && activeDeliveryOrder.alreadyDispatched) {
+            deliveryDispatchPending = false;
+            const status = document.getElementById('delivery-status');
+            if (status) status.textContent = 'THIS CARGO ORDER HAS ALREADY BEEN DISPATCHED';
+        }
+        updateDeliveryControls();
+    };
+
+    window.overlay.onDeliveryStatusReceived = function(statusJson) {
+        let result;
+        try { result = typeof statusJson === 'string' ? JSON.parse(statusJson) : statusJson; }
+        catch (error) { console.error('Invalid TSD dispatch status:', error); return; }
+        if (!result) return;
+        if (result.orderId && activeDeliveryOrder && result.orderId !== activeDeliveryOrder.orderId) return;
+
+        const statusElement = document.getElementById('delivery-status');
+        const sequence = document.getElementById('delivery-sequence');
+        if (result.kind === 'stage' && result.sequence > lastDeliverySequence) {
+            if (sequence && sequence.lastElementChild) {
+                sequence.lastElementChild.classList.remove('active');
+                sequence.lastElementChild.classList.add('complete');
+            }
+            if (sequence) {
+                const entry = document.createElement('li');
+                entry.textContent = result.message || 'PROCESSING';
+                entry.classList.add('active');
+                sequence.appendChild(entry);
+            }
+            lastDeliverySequence = result.sequence;
+            playTabletSound('data-write');
+        }
+        if (statusElement && result.message) statusElement.textContent = result.message;
+
+        if (result.completed) {
+            deliveryDispatchPending = false;
+            if (result.kind === 'success') {
+                if (activeDeliveryOrder && result.orderId === activeDeliveryOrder.orderId) {
+                    activeDeliveryOrder.alreadyDispatched = true;
+                }
+                if (sequence && result.message === 'CARGO ON THE WAY') {
+                    const entry = document.createElement('li');
+                    entry.textContent = 'AIRCRAFT TASKED // CARGO ON THE WAY';
+                    entry.classList.add('complete');
+                    sequence.appendChild(entry);
+                }
+            } else {
+                if (sequence && result.sequence > 0) {
+                    const entry = document.createElement('li');
+                    entry.textContent = result.message || 'DISPATCH FAILED';
+                    entry.classList.add('active');
+                    sequence.appendChild(entry);
+                }
+            }
+            updateDeliveryControls();
+        }
+    };
 
     function updateOrderStatus(message) {
         const statusElement =
@@ -2893,6 +4369,7 @@ function loadStash(data) {
         }
 
         updateOrderStatus('SENDING ORDER REQUEST...');
+        playTabletSound('submit');
 
         window.overlay.send(
             'tsd-submit-order',
@@ -3049,105 +4526,6 @@ function loadStash(data) {
             button.disabled = false;
         }
     };
-// Procurement request status callback
-window.overlay.onProcurementStatusReceived = function(message) {
-    updateProcurementStatus(message);
-
-    if (message === 'PURCHASE REQUEST FAILED') {
-        procurementPending = false;
-
-        purchaseCartridgesButton.disabled = false;
-        purchaseCartridgesButton.textContent = 'PURCHASE CARTRIDGES';
-    }
-};
-
-// Procurement server response callback
-window.overlay.onProcurementResponseReceived = function(responseJson) {
-    let response;
-
-    try {
-        response = JSON.parse(responseJson);
-    } catch (error) {
-        console.error(
-            'TSD could not parse the procurement response:',
-            error
-        );
-
-        updateProcurementStatus('INVALID PROCUREMENT RESPONSE');
-
-        procurementPending = false;
-        purchaseCartridgesButton.disabled = false;
-        purchaseCartridgesButton.textContent = 'PURCHASE CARTRIDGES';
-
-        return;
-    }
-
-    console.log('TSD procurement response:', response);
-
-    if (!response.transportSuccess) {
-        updateProcurementStatus(
-            response.message || 'PURCHASE SUBMISSION FAILED'
-        );
-    } else {
-        let serverResult;
-
-        try {
-            serverResult = JSON.parse(response.serverResponse);
-        } catch (error) {
-            console.error(
-                'TSD could not parse the procurement server response:',
-                error
-            );
-
-            updateProcurementStatus(
-                'SERVER RESPONSE COULD NOT BE VERIFIED'
-            );
-
-            procurementPending = false;
-            purchaseCartridgesButton.disabled = false;
-            purchaseCartridgesButton.textContent = 'PURCHASE CARTRIDGES';
-
-            return;
-        }
-
-        if (
-            serverResult.err !== 0 ||
-            !serverResult.data
-        ) {
-            console.error(
-                'TSD procurement server returned an error:',
-                serverResult
-            );
-
-            updateProcurementStatus(
-                serverResult.errmsg || 'PURCHASE FAILED'
-            );
-        } else if (
-            Array.isArray(serverResult.data.warnings) &&
-            serverResult.data.warnings.length > 0
-        ) {
-            console.warn(
-                'TSD procurement server warnings:',
-                serverResult.data.warnings
-            );
-
-            updateProcurementStatus(
-                serverResult.data.warnings[0].errorMessage ||
-                'PURCHASE REJECTED — CHECK SERVER WARNINGS'
-            );
-        } else {
-            updateProcurementStatus(
-                'PURCHASE COMPLETE — CHECK EFT MESSENGER'
-            );
-        }
-    }
-
-    procurementPending = false;
-
-    purchaseCartridgesButton.disabled = false;
-    purchaseCartridgesButton.textContent = 'PURCHASE CARTRIDGES';
-};
-
     // RECEIVE STASH DATA
 
     if (window.overlay && window.overlay.on) {
@@ -3204,8 +4582,198 @@ window.overlay.onProcurementResponseReceived = function(responseJson) {
 </html>
             ");
 
-           
+
         }
+        private bool HasFreshTabletAccess(out bool inRaid)
+        {
+            inRaid = false;
+            try
+            {
+                if (!File.Exists(TabletAccessPath)) return false;
+
+                TabletAccessState state = JsonUtility.FromJson<TabletAccessState>(
+                    File.ReadAllText(TabletAccessPath));
+                if (state == null || !state.hasAccess ||
+                    !DateTime.TryParse(
+                        state.updatedUtc,
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind,
+                        out DateTime updatedUtc))
+                {
+                    return false;
+                }
+
+                TimeSpan age = DateTime.UtcNow - updatedUtc.ToUniversalTime();
+                if (age < TimeSpan.FromSeconds(-3) ||
+                    age > TimeSpan.FromSeconds(4))
+                {
+                    return false;
+                }
+
+                inRaid = state.inRaid;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug("TSD could not read tablet access state: " + ex.Message);
+                return false;
+            }
+        }
+
+        private void CheckTabletAccessState()
+        {
+            try
+            {
+                if (!File.Exists(TabletAccessPath)) return;
+                string json = File.ReadAllText(TabletAccessPath);
+                if (string.IsNullOrWhiteSpace(json) || json == lastTabletAccessJson)
+                    return;
+
+                lastTabletAccessJson = json;
+                SendTabletAccessState();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug("TSD could not refresh tablet access display: " + ex.Message);
+            }
+        }
+
+        private void SendTabletAccessState()
+        {
+            if (overlay == null) return;
+            bool allowed = HasFreshTabletAccess(out bool inRaid);
+            TabletAccessMessage message = new TabletAccessMessage
+            {
+                hasAccess = allowed,
+                inRaid = allowed && inRaid
+            };
+            overlay.ExecuteScript(
+                "window.overlay.onTabletAccessReceived && " +
+                "window.overlay.onTabletAccessReceived(" +
+                JsonUtility.ToJson(message) + ");");
+        }
+
+        private void SendActiveCargo()
+        {
+            if (overlay == null) return;
+
+            ActiveCargoMessage message = new ActiveCargoMessage();
+            message.inRaid = HasFreshTabletAccess(out bool inRaid) && inRaid;
+
+            try
+            {
+                if (File.Exists(CargoFilePath))
+                {
+                    CargoEnvelope envelope = JsonUtility.FromJson<CargoEnvelope>(
+                        File.ReadAllText(CargoFilePath));
+                    if (envelope != null && envelope.cargo != null &&
+                        envelope.cargo.container != null && envelope.cargo.container.Length > 0 &&
+                        !string.IsNullOrWhiteSpace(envelope.orderId))
+                    {
+                        message.available = true;
+                        message.orderId = envelope.orderId;
+                        message.itemCount = envelope.cargo.container.Length;
+
+                        if (File.Exists(DeliveryDispatchStatusPath))
+                        {
+                            DeliveryDispatchStatus status =
+                                JsonUtility.FromJson<DeliveryDispatchStatus>(
+                                    File.ReadAllText(DeliveryDispatchStatusPath));
+                            message.alreadyDispatched = status != null &&
+                                status.completed && status.kind == "success" &&
+                                string.Equals(status.orderId, message.orderId,
+                                    StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("TSD could not read active cargo: " + ex.Message);
+            }
+
+            overlay.ExecuteScript(
+                "window.overlay.onActiveCargoReceived && " +
+                "window.overlay.onActiveCargoReceived(" +
+                JsonUtility.ToJson(message) + ");");
+        }
+
+        private void CheckForOrderLookupComplete()
+        {
+            if (!File.Exists(OrderLookupResponsePath)) return;
+            try
+            {
+                File.Delete(OrderLookupResponsePath);
+                SendActiveCargo();
+                Logger.LogInfo("TSD refreshed the available delivery manifest.");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("TSD could not refresh the delivery manifest: " + ex.Message);
+            }
+        }
+
+        private void CheckDeliveryDispatchStatus()
+        {
+            if (overlay == null || !File.Exists(DeliveryDispatchStatusPath)) return;
+            try
+            {
+                string json = File.ReadAllText(DeliveryDispatchStatusPath);
+                if (string.IsNullOrWhiteSpace(json) || json == lastDeliveryStatusJson)
+                    return;
+
+                lastDeliveryStatusJson = json;
+                string escapedJson = json
+                    .Replace("\\", "\\\\")
+                    .Replace("'", "\\'")
+                    .Replace("\r", "")
+                    .Replace("\n", "");
+                overlay.ExecuteScript(
+                    "window.overlay.onDeliveryStatusReceived && " +
+                    "window.overlay.onDeliveryStatusReceived('" +
+                    escapedJson + "');");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug("TSD could not forward delivery status: " + ex.Message);
+            }
+        }
+
+        private void SaveDeliveryDispatchRequest(string payload)
+        {
+            try
+            {
+                if (!HasFreshTabletAccess(out bool inRaid))
+                {
+                    Logger.LogWarning("TSD rejected dispatch: field terminal is not available.");
+                    return;
+                }
+
+                if (!inRaid)
+                {
+                    Logger.LogWarning("TSD rejected dispatch: enter a raid first.");
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(payload))
+                    throw new InvalidOperationException("The dispatch request was empty.");
+
+                Directory.CreateDirectory(OrderFolderPath);
+                if (File.Exists(DeliveryDispatchRequestPath))
+                {
+                    Logger.LogWarning("TSD already has a delivery dispatch pending.");
+                    return;
+                }
+
+                File.WriteAllText(DeliveryDispatchRequestPath, payload);
+                Logger.LogInfo("TSD queued a secure cargo dispatch request.");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("TSD could not queue cargo dispatch: " + ex);
+            }
+        }
+
         private void CheckForStashRefreshComplete()
         {
             if (!File.Exists(StashRefreshCompletePath))
@@ -3229,7 +4797,7 @@ window.overlay.onProcurementResponseReceived = function(responseJson) {
                         "window.onStashRefreshComplete();"
                     );
                 }
-                
+
 
                 Logger.LogInfo(
                     "Tactical Supply Drops sent refreshed stash data to F9.");
@@ -3313,6 +4881,21 @@ window.overlay.onProcurementResponseReceived = function(responseJson) {
                     "TSD could not process the order response: " + exception);
             }
         }
+        private void CheckProcurementCatalogResponse()
+        {
+            if (overlay == null || !File.Exists(ProcurementCatalogResponsePath)) return;
+            try
+            {
+                string json = File.ReadAllText(ProcurementCatalogResponsePath);
+                overlay.ExecuteScript("window.overlay.onProcurementCatalogReceived && window.overlay.onProcurementCatalogReceived(" + json + ");");
+                File.Delete(ProcurementCatalogResponsePath);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("TSD could not refresh trader stock: " + ex.Message);
+            }
+        }
+
         private void CheckProcurementPurchaseResponse()
         {
             try
@@ -3454,6 +5037,64 @@ window.overlay.onProcurementResponseReceived = function(responseJson) {
                 }
             }
         }
+
+        [Serializable]
+        private class TabletAccessState
+        {
+            public bool hasAccess;
+            public bool inRaid;
+            public string updatedUtc;
+        }
+
+        [Serializable]
+        private class TabletAccessMessage
+        {
+            public bool hasAccess;
+            public bool inRaid;
+        }
+
+        [Serializable]
+        private class ActiveCargoMessage
+        {
+            public bool available;
+            public string orderId;
+            public int itemCount;
+            public bool alreadyDispatched;
+            public bool inRaid;
+        }
+
+        [Serializable]
+        private class CargoEnvelope
+        {
+            public string orderId;
+            public CargoPayload cargo;
+        }
+
+        [Serializable]
+        private class CargoPayload
+        {
+            public CargoItem[] container;
+        }
+
+        [Serializable]
+        private class CargoItem
+        {
+            public string _id;
+            public string _tpl;
+        }
+
+        [Serializable]
+        private class DeliveryDispatchStatus
+        {
+            public string requestId;
+            public string orderId;
+            public string kind;
+            public int sequence;
+            public string message;
+            public bool completed;
+            public string dropPoint;
+        }
+
         private void OnDestroy()
         {
             if (overlay != null)

@@ -51,3 +51,12 @@ coverage/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local snapshots and Unity-generated files
+*_PRE_*.cs
+**/Library/
+**/Temp/
+**/Logs/
+**/UserSettings/
+**/MemoryCaptures/
+**/Recordings/

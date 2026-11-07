@@ -1,4 +1,5 @@
 ﻿
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -27,15 +28,17 @@ public class SupplyOrderCreationService(
     SupplyOrderService orderService,
     SupplyOrderPaymentProcessor paymentProcessor,
     SupplyOrderItemReservationService reservationService,
-        SupplyOrderRepository orderRepository,
+    SupplyOrderRepository orderRepository,
     ICloner cloner,
     ProfileTransactionLockService profileTransactionLockService)
 {
-    
+    private static void LogFailure(string stage, string reason)
+    {
+        Console.WriteLine(
+            $"[Tactical Supply Drops] ORDER FAILURE [{stage}]: {reason}");
+    }
 
     // Compatibility overload for callers that order entire stacks.
-    // Duplicate detection happens inside the main overload before
-    // any stash validation is attempted.
     public Task<SupplyOrderCreationResult> TryCreateOrderAsync(
         PmcData profile,
         MongoId sessionId,
@@ -70,26 +73,31 @@ public class SupplyOrderCreationService(
             selectedItemIds == null ||
             requestedQuantities == null)
         {
+            LogFailure(
+                "INITIAL VALIDATION",
+                "Profile ID, selected item IDs, or requested quantities were null.");
+
             return new SupplyOrderCreationResult(false, null, 0);
         }
 
         List<string> requestedIds = selectedItemIds.ToList();
 
-        requestId ??= System.Guid.NewGuid().ToString("N");
+        requestId ??= Guid.NewGuid().ToString("N");
 
         if (string.IsNullOrWhiteSpace(requestId))
         {
+            LogFailure("REQUEST ID", "Request ID was empty.");
+
             return new SupplyOrderCreationResult(false, null, 0);
         }
 
         SemaphoreSlim profileLock =
-    await profileTransactionLockService.AcquireAsync(
-        profile.Id.Value,
-        cancellationToken);
+            await profileTransactionLockService.AcquireAsync(
+                profile.Id.Value,
+                cancellationToken);
 
         try
         {
-            // IMPORTANT: check duplicates before validating stash items.
             SupplyOrder? existingOrder =
                 await orderRepository.GetOrderByRequestIdAsync(
                     profile.Id.Value,
@@ -98,6 +106,7 @@ public class SupplyOrderCreationService(
 
             if (existingOrder != null)
             {
+
                 return new SupplyOrderCreationResult(
                     true,
                     existingOrder,
@@ -115,11 +124,14 @@ public class SupplyOrderCreationService(
                 profileChange.Items.ChangedItems == null ||
                 profileChange.Items.DeletedItems == null)
             {
+                LogFailure(
+                    "PROFILE CHANGES",
+                    "Inventory or required profile-change collections were missing.");
+
                 return new SupplyOrderCreationResult(false, null, 0);
             }
 
-            // An empty quantity dictionary means this is an older caller
-            // requesting complete stacks.
+            // Older callers request complete stacks.
             if (requestedQuantities.Count == 0)
             {
                 if (!selectionService.TryValidateSelection(
@@ -128,6 +140,10 @@ public class SupplyOrderCreationService(
                     out var fullStackItems,
                     out _))
                 {
+                    LogFailure(
+                        "FULL STACK SELECTION",
+                        "The initial full-stack selection validation failed.");
+
                     return new SupplyOrderCreationResult(false, null, 0);
                 }
 
@@ -138,6 +154,10 @@ public class SupplyOrderCreationService(
 
                     if (item == null)
                     {
+                        LogFailure(
+                            "FULL STACK LOOKUP",
+                            $"Selected item {id} could not be found.");
+
                         return new SupplyOrderCreationResult(false, null, 0);
                     }
 
@@ -156,13 +176,31 @@ public class SupplyOrderCreationService(
                 out var validatedQuantities,
                 out int totalFootprint))
             {
+                LogFailure(
+                    "SELECTION VALIDATION",
+                    $"Selection validation rejected the request. " +
+                    $"Footprint reported: {totalFootprint}.");
+
                 return new SupplyOrderCreationResult(
                     false,
                     null,
                     totalFootprint);
             }
 
-            var itemDetails = itemDetailsService.GetItemDetails(selectedItems);
+            List<StashItemDetails> itemDetails;
+
+            try
+            {
+                itemDetails = itemDetailsService.GetItemDetails(selectedItems);
+            }
+            catch (Exception exception)
+            {
+                LogFailure(
+                    "ITEM DETAILS",
+                    $"Exception retrieving item details: {exception}");
+
+                throw;
+            }
 
             foreach (var details in itemDetails)
             {
@@ -172,11 +210,25 @@ public class SupplyOrderCreationService(
                 {
                     details.Quantity = requestedQuantity;
                 }
+
             }
 
-            int totalPrice = pricingService.CalculateSupplyOrderPrice(
-                itemDetails,
-                reputationTier);
+            int totalPrice;
+
+            try
+            {
+                totalPrice = pricingService.CalculateSupplyOrderPrice(
+                    itemDetails,
+                    reputationTier);
+            }
+            catch (Exception exception)
+            {
+                LogFailure(
+                    "PRICING",
+                    $"Exception calculating order price: {exception}");
+
+                throw;
+            }
 
             List<SupplyOrderItem> orderItems = new();
 
@@ -184,10 +236,29 @@ public class SupplyOrderCreationService(
             {
                 string itemId = (string)item.Id;
 
-                Item? copiedItem = cloner.Clone(item);
+                Item? copiedItem;
+
+                try
+                {
+                    copiedItem = cloner.Clone(item);
+                }
+                catch (Exception exception)
+                {
+                    LogFailure(
+                        "ITEM CLONING",
+                        $"Exception cloning item {itemId}, " +
+                        $"template {(string)item.Template}: {exception}");
+
+                    throw;
+                }
 
                 if (copiedItem == null)
                 {
+                    LogFailure(
+                        "ITEM CLONING",
+                        $"Cloner returned null for item {itemId}, " +
+                        $"template {(string)item.Template}.");
+
                     return new SupplyOrderCreationResult(
                         false,
                         null,
@@ -213,6 +284,11 @@ public class SupplyOrderCreationService(
                     {
                         if (copiedItem.Upd == null)
                         {
+                            LogFailure(
+                                "STACK QUANTITY",
+                                $"Item {itemId} has no Upd data, " +
+                                "so its partial stack quantity cannot be set.");
+
                             return new SupplyOrderCreationResult(
                                 false,
                                 null,
@@ -232,9 +308,22 @@ public class SupplyOrderCreationService(
                 });
             }
 
-            SupplyOrder preparedOrder = orderService.CreateOrder(
-                orderItems,
-                totalPrice);
+            SupplyOrder preparedOrder;
+
+            try
+            {
+                preparedOrder = orderService.CreateOrder(
+                    orderItems,
+                    totalPrice);
+            }
+            catch (Exception exception)
+            {
+                LogFailure(
+                    "ORDER PREPARATION",
+                    $"Exception creating the order: {exception}");
+
+                throw;
+            }
 
             preparedOrder.RequestId = requestId;
             preparedOrder.TotalFootprint = totalFootprint;
@@ -244,6 +333,10 @@ public class SupplyOrderCreationService(
                 totalPrice,
                 out var paymentPlan))
             {
+                LogFailure(
+                    "PAYMENT PLAN",
+                    $"Could not create payment plan for {totalPrice} roubles.");
+
                 return new SupplyOrderCreationResult(
                     false,
                     null,
@@ -282,6 +375,7 @@ public class SupplyOrderCreationService(
 
             try
             {
+
                 if (!reservationService.TryReserveItems(
                     profile,
                     sessionId,
@@ -289,6 +383,10 @@ public class SupplyOrderCreationService(
                     selectedItems,
                     validatedQuantities))
                 {
+                    LogFailure(
+                        "ITEM RESERVATION",
+                        "The reservation service rejected the selected items.");
+
                     RestoreOriginalState();
 
                     return new SupplyOrderCreationResult(
@@ -303,6 +401,10 @@ public class SupplyOrderCreationService(
                     output,
                     paymentPlan))
                 {
+                    LogFailure(
+                        "PAYMENT PROCESSING",
+                        "The payment deduction service rejected the payment.");
+
                     RestoreOriginalState();
 
                     return new SupplyOrderCreationResult(

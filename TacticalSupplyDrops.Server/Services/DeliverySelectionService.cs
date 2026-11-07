@@ -1,4 +1,5 @@
 ﻿
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using SPTarkov.DI.Annotations;
@@ -13,6 +14,12 @@ public class DeliverySelectionService(
     StashInventoryService stashInventoryService,
     DeliveryFootprintLimitService footprintLimitService)
 {
+    private static void Log(string message)
+    {
+        Console.WriteLine(
+            $"[Tactical Supply Drops] SELECTION DIAGNOSTIC: {message}");
+    }
+
     public bool TryValidateSelection(
         PmcData profile,
         IEnumerable<string> selectedItemIds,
@@ -25,6 +32,7 @@ public class DeliverySelectionService(
         if (profile?.Inventory?.Stash == null ||
             selectedItemIds == null)
         {
+            Log("Rejected: profile stash or selected IDs were null.");
             return false;
         }
 
@@ -32,6 +40,7 @@ public class DeliverySelectionService(
 
         if (string.IsNullOrWhiteSpace(stashId))
         {
+            Log("Rejected: stash ID was empty.");
             return false;
         }
 
@@ -41,6 +50,7 @@ public class DeliverySelectionService(
             requestedIds.Any(string.IsNullOrWhiteSpace) ||
             requestedIds.Distinct().Count() != requestedIds.Count)
         {
+            Log("Rejected: selection was empty, invalid, or contained duplicates.");
             return false;
         }
 
@@ -48,8 +58,7 @@ public class DeliverySelectionService(
             stashInventoryService.GetStashItems(profile);
 
         Dictionary<string, Item> itemsById = stashItems
-            .ToDictionary(
-                item => (string)item.Id);
+            .ToDictionary(item => (string)item.Id);
 
         Dictionary<string, List<Item>> childrenByParent = stashItems
             .Where(item => !string.IsNullOrWhiteSpace(item.ParentId))
@@ -58,28 +67,51 @@ public class DeliverySelectionService(
                 group => group.Key,
                 group => group.ToList());
 
-        HashSet<string> requestedIdSet = requestedIds.ToHashSet();
+        Log(
+            $"Starting validation. Stash items: {stashItems.Count}. " +
+            $"Requested IDs: {string.Join(", ", requestedIds)}.");
 
         // Every requested item must exist in the stash.
-        if (requestedIds.Any(id => !itemsById.ContainsKey(id)))
+        foreach (string id in requestedIds)
         {
-            return false;
+            if (!itemsById.TryGetValue(id, out Item? item))
+            {
+                Log($"Rejected: item {id} was not found in the stash.");
+                return false;
+            }
+
+            Log(
+                $"Found item {id}. Template: {item.Template}. " +
+                $"Parent: {item.ParentId ?? "(null)"}.");
         }
 
-        // Find the top-level stash container for each requested item.
-        // Nested items are valid only when their top-level container
-        // is also included in the selection.
+        // Verify that every selected item belongs to the stash.
+        // Unlike the previous implementation, its parent container
+        // does NOT need to be selected.
         foreach (string requestedId in requestedIds)
         {
             Item currentItem = itemsById[requestedId];
 
             while (currentItem.ParentId != stashId)
             {
-                if (string.IsNullOrWhiteSpace(currentItem.ParentId) ||
-                    !itemsById.TryGetValue(
-                        currentItem.ParentId,
-                        out Item? parentItem))
+                if (string.IsNullOrWhiteSpace(currentItem.ParentId))
                 {
+                    Log(
+                        $"Rejected: item {requestedId} has no valid path " +
+                        "back to the stash.");
+
+                    selectedItems.Clear();
+                    return false;
+                }
+
+                if (!itemsById.TryGetValue(
+                    currentItem.ParentId,
+                    out Item? parentItem))
+                {
+                    Log(
+                        $"Rejected: parent {currentItem.ParentId} of item " +
+                        $"{currentItem.Id} was not found.");
+
                     selectedItems.Clear();
                     return false;
                 }
@@ -87,45 +119,55 @@ public class DeliverySelectionService(
                 currentItem = parentItem;
             }
 
-            string rootId = (string)currentItem.Id;
-
-            if (!requestedIdSet.Contains(rootId))
-            {
-                selectedItems.Clear();
-                return false;
-            }
+            Log(
+                $"Verified item {requestedId} belongs to the stash.");
         }
 
-        // Expand only top-level selected items.
-        // This automatically includes their nested contents.
+        // Expand every requested item independently.
+        // Selecting a container includes its descendants.
+        // Selecting an individual nested item does not include
+        // its parent or unrelated contents.
         foreach (string requestedId in requestedIds)
         {
             Item item = itemsById[requestedId];
 
-            if (item.ParentId != stashId)
-            {
-                continue;
-            }
+            List<Item> itemAndChildren =
+                item.GetItemWithChildren(childrenByParent);
 
-            selectedItems.AddRange(
-                item.GetItemWithChildren(childrenByParent));
+            Log(
+                $"Expanded selection {requestedId}: " +
+                $"{itemAndChildren.Count} item(s).");
+
+            selectedItems.AddRange(itemAndChildren);
         }
 
-        // Prevent container contents from being counted more than once.
+        // Prevent duplicate items when both a container and one
+        // of its contents have been selected.
         selectedItems = selectedItems
             .DistinctBy(item => item.Id)
             .ToList();
 
+        Log(
+            $"Total unique selected items: {selectedItems.Count}.");
+
         totalFootprint = footprintLimitService.CalculateTotalFootprint(
             selectedItems);
+
+        Log($"Calculated footprint: {totalFootprint}.");
 
         if (totalFootprint >
             DeliveryFootprintLimitService.MaximumFootprint)
         {
+            Log(
+                $"Rejected: footprint {totalFootprint} exceeds maximum " +
+                $"{DeliveryFootprintLimitService.MaximumFootprint}.");
+
             selectedItems.Clear();
             totalFootprint = 0;
             return false;
         }
+
+        Log("Base selection validation succeeded.");
 
         return true;
     }
@@ -145,6 +187,7 @@ public class DeliverySelectionService(
         if (requestedQuantities == null ||
             selectedItemIds == null)
         {
+            Log("Quantity validation rejected: IDs or quantities were null.");
             return false;
         }
 
@@ -156,6 +199,7 @@ public class DeliverySelectionService(
             requestedQuantities.Count != requestedIds.Count ||
             requestedIds.Any(id => !requestedQuantities.ContainsKey(id)))
         {
+            Log("Quantity validation rejected: invalid ID or quantity mapping.");
             return false;
         }
 
@@ -165,6 +209,7 @@ public class DeliverySelectionService(
             out selectedItems,
             out totalFootprint))
         {
+            Log("Quantity validation rejected because base validation failed.");
             return false;
         }
 
@@ -178,6 +223,8 @@ public class DeliverySelectionService(
 
             if (item == null)
             {
+                Log($"Quantity validation rejected: item {id} was not found.");
+
                 selectedItems.Clear();
                 validatedQuantities.Clear();
                 totalFootprint = 0;
@@ -190,10 +237,19 @@ public class DeliverySelectionService(
             bool hasContents = selectedItems.Any(
                 selectedItem => selectedItem.ParentId == id);
 
+            Log(
+                $"Quantity check: {id}. Requested: {requestedQuantity}. " +
+                $"Available: {availableQuantity}. Has contents: {hasContents}.");
+
             if (requestedQuantity < 1 ||
                 requestedQuantity > availableQuantity ||
                 (hasContents && requestedQuantity != availableQuantity))
             {
+                Log(
+                    $"Quantity validation rejected item {id}. " +
+                    $"Requested: {requestedQuantity}, available: " +
+                    $"{availableQuantity}, has contents: {hasContents}.");
+
                 selectedItems.Clear();
                 validatedQuantities.Clear();
                 totalFootprint = 0;
@@ -202,6 +258,8 @@ public class DeliverySelectionService(
 
             validatedQuantities[id] = requestedQuantity;
         }
+
+        Log("Quantity validation succeeded.");
 
         return true;
     }

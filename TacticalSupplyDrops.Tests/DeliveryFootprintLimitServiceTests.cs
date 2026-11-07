@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using TacticalSupplyDrops.Server.Services;
@@ -9,7 +9,7 @@ namespace TacticalSupplyDrops.Tests;
 public class DeliveryFootprintLimitServiceTests
 {
     [Fact]
-    public void IsWithinLimit_ShouldAcceptExactlyTwelveCells()
+    public void IsWithinLimit_ShouldAcceptExactlySixtyCells()
     {
         var service = CreateService();
 
@@ -21,11 +21,11 @@ public class DeliveryFootprintLimitServiceTests
         };
 
         Assert.True(service.IsWithinLimit(items));
-        Assert.Equal(12, service.CalculateTotalFootprint(items));
+        Assert.Equal(60, service.CalculateTotalFootprint(items));
     }
 
     [Fact]
-    public void IsWithinLimit_ShouldRejectMoreThanTwelveCells()
+    public void IsWithinLimit_ShouldRejectMoreThanSixtyCells()
     {
         var service = CreateService();
 
@@ -36,7 +36,7 @@ public class DeliveryFootprintLimitServiceTests
         };
 
         Assert.False(service.IsWithinLimit(items));
-        Assert.Equal(15, service.CalculateTotalFootprint(items));
+        Assert.Equal(66, service.CalculateTotalFootprint(items));
     }
 
     [Fact]
@@ -90,11 +90,11 @@ public class DeliveryFootprintLimitServiceTests
 
             return id switch
             {
-                "64b000000000000000000001" => (2, 3),
+                "64b000000000000000000001" => (9, 6),
                 "64b000000000000000000002" => (2, 2),
                 "64b000000000000000000003" => (2, 1),
 
-                "64b000000000000000000004" => (3, 3),
+                "64b000000000000000000004" => (6, 10),
                 "64b000000000000000000005" => (2, 3),
 
                 "64b000000000000000000006" => (2, 2),

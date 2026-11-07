@@ -1,6 +1,7 @@
-﻿
+
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using EFT.Airdrop;
 using HarmonyLib;
 using BepInEx.Logging;
@@ -15,113 +16,143 @@ namespace TacticalSupplyDrops.Client
     {
         private static ManualLogSource _logger;
 
-        private static readonly HashSet<int> RecoloredAirdrops =
+        private static readonly HashSet<int> TaggedAirdrops =
             new HashSet<int>();
+
+
+        private static bool _capturingDropPoint;
+        private static Vector3? _capturedDropPoint;
+        private static Vector3? _tsdDropPoint;
+        private static DateTime _tsdDropPointExpiresUtc;
 
         public static void Initialize(ManualLogSource logger)
         {
             _logger = logger;
         }
 
+        public static void BeginTsdDropPointCapture()
+        {
+            _capturedDropPoint = null;
+            _capturingDropPoint = true;
+        }
+
+        public static bool EndTsdDropPointCapture(out Vector3 dropPoint)
+        {
+            _capturingDropPoint = false;
+            if (!_capturedDropPoint.HasValue)
+            {
+                dropPoint = Vector3.zero;
+                return false;
+            }
+
+            dropPoint = _capturedDropPoint.Value;
+            _tsdDropPoint = dropPoint;
+            _tsdDropPointExpiresUtc = DateTime.UtcNow.AddMinutes(30);
+            return true;
+        }
+
+        public static void CaptureSelectedDropPoint(GameObject point)
+        {
+            if (!_capturingDropPoint || point == null)
+            {
+                return;
+            }
+
+            _capturedDropPoint = point.transform.position;
+        }
+
         [HarmonyPostfix]
         public static void ManualUpdatePostfix(
             ClientAirDrop __instance)
         {
-            if (__instance == null ||
-                __instance._airdropDust == null)
+            if (__instance == null)
             {
                 return;
             }
 
-            GameObject dustObject = __instance._airdropDust;
-
-            // The landing effect is inactive until the cargo lands.
-            if (!dustObject.activeInHierarchy)
+            int instanceId = RuntimeHelpers.GetHashCode(__instance);
+            if (!TaggedAirdrops.Contains(instanceId))
             {
-                return;
-            }
+                if (!_tsdDropPoint.HasValue ||
+                    DateTime.UtcNow > _tsdDropPointExpiresUtc ||
+                    HorizontalDistanceSquared(
+                        __instance._destinationPosition,
+                        _tsdDropPoint.Value) > 144f)
+                {
+                    return;
+                }
 
-            int instanceId = dustObject.GetInstanceID();
-
-            // Only recolor each landing effect once.
-            if (RecoloredAirdrops.Contains(instanceId))
-            {
-                return;
+                TaggedAirdrops.Add(instanceId);
+                _logger?.LogInfo(
+                    "[TSD] Identified the TSD airdrop at its selected " +
+                    "drop point; applying orange smoke.");
             }
 
             try
             {
-                ParticleSystem particleSystem =
-                    dustObject.GetComponent<ParticleSystem>();
-
-                if (particleSystem == null)
-                {
-                    _logger?.LogWarning(
-                        "[TSD] Airdrop landing dust has no ParticleSystem.");
-
-                    return;
-                }
-
-                ParticleSystem.MainModule main =
-                    particleSystem.main;
-
-                // Keep the starting colour neutral.
-                // Preserve the original alpha range.
-                main.startColor =
-                    new ParticleSystem.MinMaxGradient(
-                        new Color(1f, 1f, 1f, 0.6117647f),
-                        new Color(1f, 1f, 1f, 0.8f));
-
-                // Create a warm orange gradient.
-                Gradient orangeGradient = new Gradient();
-
-                GradientColorKey[] colorKeys =
-                {
-                    new GradientColorKey(
-                        new Color(1f, 0.35f, 0f),
-                        0f),
-
-                    new GradientColorKey(
-                        new Color(1f, 0.65f, 0.10f),
-                        0.232f),
-
-                    new GradientColorKey(
-                        new Color(1f, 0.35f, 0f),
-                        0.671f)
-                };
-
-                GradientAlphaKey[] alphaKeys =
-                {
-                    new GradientAlphaKey(0f, 0f),
-                    new GradientAlphaKey(1f, 0.188f),
-                    new GradientAlphaKey(0f, 1f)
-                };
-
-                orangeGradient.SetKeys(
-                    colorKeys,
-                    alphaKeys);
-
-                ParticleSystem.ColorOverLifetimeModule colorModule =
-                    particleSystem.colorOverLifetime;
-
-                colorModule.enabled = true;
-
-                colorModule.color =
-                    new ParticleSystem.MinMaxGradient(
-                        orangeGradient);
-
-                RecoloredAirdrops.Add(instanceId);
-
-                _logger?.LogInfo(
-                    "[TSD] Successfully recolored an airdrop landing effect orange. " +
-                    "Instance ID: " + instanceId);
+                RecolorEffect(__instance._airdropFlare);
+                RecolorEffect(__instance._airdropDust);
             }
             catch (Exception ex)
             {
-                _logger?.LogError(
-                    "[TSD] Could not recolor airdrop landing effect: " +
-                    ex);
+                _logger?.LogError("[TSD] Could not recolor TSD smoke: " + ex);
             }
+        }
+
+        public static void ReleaseTsdDrop(ClientAirDrop drop)
+        {
+            if (drop == null) return;
+            TaggedAirdrops.Remove(RuntimeHelpers.GetHashCode(drop));
+            if (drop._airdropFlare != null)
+                drop._airdropFlare.GetComponent<TsdSmokeTint>()?.Restore();
+            if (drop._airdropDust != null)
+                drop._airdropDust.GetComponent<TsdSmokeTint>()?.Restore();
+        }
+
+        private static float HorizontalDistanceSquared(
+            Vector3 first,
+            Vector3 second)
+        {
+            float x = first.x - second.x;
+            float z = first.z - second.z;
+            return x * x + z * z;
+        }
+
+        private static void RecolorEffect(GameObject effectObject)
+        {
+            if (effectObject == null)
+            {
+                return;
+            }
+
+            TsdSmokeTint tint = effectObject.GetComponent<TsdSmokeTint>();
+            if (tint == null) tint = effectObject.AddComponent<TsdSmokeTint>();
+            if (tint.Apply())
+            {
+                _logger?.LogInfo(
+                    "[TSD] Applied orange material and particle colors to a TSD smoke effect.");
+            }
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(AirdropManager),
+        nameof(AirdropManager.TakeAirdropPoint))]
+    public static class TsdAirdropPointCapture
+    {
+        [HarmonyPostfix]
+        public static void Postfix(GameObject __result)
+        {
+            AirdropDustRecolor.CaptureSelectedDropPoint(__result);
+        }
+    }
+    [HarmonyPatch(typeof(ClientAirDrop), nameof(ClientAirDrop.ReturnToPool))]
+    public static class TsdAirdropSmokePoolReset
+    {
+        [HarmonyPrefix]
+        public static void Prefix(ClientAirDrop __instance)
+        {
+            AirdropDustRecolor.ReleaseTsdDrop(__instance);
         }
     }
 }

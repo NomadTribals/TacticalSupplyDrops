@@ -40,11 +40,13 @@ public class SupplyDropCargoBuilder(
         Item crate = CreateCrate();
 
         List<Item> savedItems = order.Items
-            .Where(entry => entry.Items != null)
-            .SelectMany(entry => entry.Items)
-            .GroupBy(item => item.Id.ToString())
-            .Select(group => group.First())
-            .ToList();
+     .Where(entry => entry.Items != null)
+     .SelectMany(entry => entry.Items!)
+     .Where(item => item != null)
+     .Select(item => item!)
+     .GroupBy(item => item.Id.ToString())
+     .Select(group => group.First())
+     .ToList();
 
         if (savedItems.Count == 0)
             throw new InvalidOperationException(

@@ -22,8 +22,8 @@ namespace TacticalSupplyDrops.Client
         private const string CargoEndpoint =
             "/client/tactical-supply-drops/get-cargo";
 
-        private const string CargoFilePath =
-            @"F:\Games\SPT\BepInEx\config\TacticalSupplyDrops\cargo.json";
+        private static readonly string CargoFilePath =
+            Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "cargo.json");
 
         private static readonly SemaphoreSlim CargoFileLock =
             new SemaphoreSlim(1, 1);

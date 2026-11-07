@@ -1,4 +1,4 @@
-﻿
+
 using TacticalSupplyDrops.Server.Models;
 using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
@@ -12,7 +12,6 @@ public class SupplyDropItemEventRouter : ItemEventRouter
 {
     public SupplyDropItemEventRouter(
         SupplyDropStaticRouterCallback callback,
-        ProcurementPurchaseCallback procurementCallback,
         ISptLogger<SupplyDropItemEventRouter> logger)
         : base(new ItemRouteAction[]
         {
@@ -25,18 +24,8 @@ public class SupplyDropItemEventRouter : ItemEventRouter
                         body,
                         sessionId,
                         output,
-                        cancellationToken)),
+                        cancellationToken))
 
-           new ItemRouteAction<ProcurementPurchaseRequest>(
-    "TacticalSupplyDropsPurchaseCartridges",
-    async (url, pmcData, body, sessionId, output, cancellationToken) =>
-        await procurementCallback.HandlePurchase(
-            url,
-            pmcData,
-            body,
-            sessionId,
-            output,
-            cancellationToken))
         })
     {
         logger.Success(
