@@ -1,3 +1,22 @@
+# Tactical Supply Drops 2.1.0 — Field OS 0.4.0
+
+- Add ground courier deliveries on Factory day/night, Labs and both Ground Zero variants.
+- Use hidden, clear, reachable handoff spots at least 40 metres from the player, with a wider map search and retry using the same accepted order when placement fails.
+- Add tablet distance, direction and floor guidance, a flashing orange beacon and adjustable proximity beeper (up to 100% in F12).
+- Add optional Dynamic Maps airdrop-icon markers for courier cargo, removed after collection or raid end. Dynamic Maps is not required.
+- Add matching TSD charcoal/orange branding and gold insignia to ground and aircraft cargo; name TSD shipments TSD Cargo Crate.
+- Add a personalised boot welcome, operator name in the interface and registered operator in Device Info.
+- Add a data activity LED during orders, purchases, trader stock loading and delivery dispatch.
+- Show the selected delivery route and personalised courier-ready confirmation.
+- Remember the last Procurement trader and search.
+- Combine all F12 settings under Tactical Supply Drops, preserving the existing tablet key, colours and window settings.
+
+Requires SPT 4.1.6 and Anvil WebOverlay 1.11.0. Optional courier map integration was checked with Dynamic Maps 1.2.1. Fika compatibility remains unconfirmed.
+
+Close the game and server, then extract the ZIP into the main SPT folder next to EscapeFromTarkov.exe. Replace the included TSD files and retain your configuration/order data. Both the courier visual bundle and the Field Terminal bundle are included. Do not install development GroundProbe plugins.
+
+---
+
 # Tactical Supply Drops 2.0.1 — Field OS 0.3.0
 
 - Add configurable interface accent colors, with presets, custom hex colors, and a restore-default option on the tablet Config tab.

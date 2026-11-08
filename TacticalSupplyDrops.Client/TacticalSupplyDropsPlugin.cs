@@ -49,8 +49,8 @@ namespace TacticalSupplyDrops.Client
 
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops",
-    "nomadtribals-TacticalSupplyDrops",
-    "2.0.1")]
+    "Tactical Supply Drops",
+    "2.1.0")]
     public class TacticalSupplyDropsPlugin : BaseUnityPlugin
     {
 
@@ -65,6 +65,7 @@ namespace TacticalSupplyDrops.Client
         private bool _stashRefreshInProgress;
         private bool _orderLookupInProgress;
         private bool _deliveryDispatchInProgress;
+        private TsdGroundDelivery groundDelivery;
         private float _tabletAccessRefreshTimer;
         private readonly HashSet<string> _dispatchedOrderIds =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -128,6 +129,7 @@ namespace TacticalSupplyDrops.Client
                 "Tactical Supply Drops client plugin loaded!");
 
             AirdropDevelopmentConfig.Initialize(Config);
+            groundDelivery = new TsdGroundDelivery(Config, Logger);
 
             Logger.LogInfo(
                 "[TSD] Config file path: " + Config.ConfigFilePath);
@@ -236,6 +238,7 @@ namespace TacticalSupplyDrops.Client
 
         private void Update()
         {
+            groundDelivery?.Update();
 
             if (ProcurementProfileRefresh.Initialize(out string error))
             {
@@ -357,14 +360,20 @@ namespace TacticalSupplyDrops.Client
             {
                 bool inRaid = false;
                 bool hasTerminal = false;
+                string nickname = null;
+                string deliveryMethod = null;
 
                 try
                 {
                     // Reuse the dispatch check so the display and delivery agree on raid state.
-                    inRaid = TryGetRaidPlayer(out _, out Player player);
+                    inRaid = TryGetRaidPlayer(out ClientGameWorld currentWorld, out Player player);
                     hasTerminal = inRaid
                         ? HasFieldTerminal(player)
                         : HasFieldTerminalOutsideRaid();
+                    if (Singleton<ClientApplication<IEftSession>>.Instantiated)
+                        nickname = Singleton<ClientApplication<IEftSession>>.Instance.GetClientBackEndSession()?.Profile?.Info?.Nickname;
+                    if (string.IsNullOrWhiteSpace(nickname) && inRaid) nickname = player?.Profile?.Info?.Nickname;
+                    if (inRaid) deliveryMethod = groundDelivery != null && groundDelivery.CanServe(currentWorld) ? "courier" : "aircraft";
                 }
                 catch (Exception ex)
                 {
@@ -381,6 +390,8 @@ namespace TacticalSupplyDrops.Client
                     {
                         hasAccess = hasTerminal,
                         inRaid = inRaid,
+                        nickname = nickname,
+                        deliveryMethod = deliveryMethod,
                         updatedUtc = DateTime.UtcNow.ToString("o")
                     }));
 
@@ -483,8 +494,8 @@ namespace TacticalSupplyDrops.Client
                     yield break;
                 }
 
-                CargoEnvelope cargoEnvelope = JsonUtility.FromJson<CargoEnvelope>(
-                    File.ReadAllText(CargoFilePath));
+                string manifestSnapshot = File.ReadAllText(CargoFilePath);
+                CargoEnvelope cargoEnvelope = JsonUtility.FromJson<CargoEnvelope>(manifestSnapshot);
                 if (cargoEnvelope == null ||
                     cargoEnvelope.cargo == null ||
                     cargoEnvelope.cargo.container == null ||
@@ -518,7 +529,17 @@ namespace TacticalSupplyDrops.Client
                     yield break;
                 }
 
-                string[] stages =
+                var dispatchWorld = gameWorld;
+                bool groundRoute = groundDelivery != null && groundDelivery.CanServe(gameWorld);
+                Logger.LogInfo("[TSD] Delivery route for " + gameWorld.LocationId + ": " + (groundRoute ? "ground courier" : "aircraft"));
+                string[] stages = groundRoute ? new[]
+                {
+                    "AUTHENTICATING FIELD TERMINAL",
+                    "READING SECURE CARGO MANIFEST",
+                    "TRIANGULATING TERMINAL POSITION",
+                    "LOCAL COURIER RELAY ACKNOWLEDGED",
+                    "ENCRYPTING GROUND HANDOFF PACKET"
+                } : new[]
                 {
                     "AUTHENTICATING FIELD TERMINAL",
                     "READING SECURE CARGO MANIFEST",
@@ -571,6 +592,67 @@ namespace TacticalSupplyDrops.Client
                     yield break;
                 }
 
+                if (groundRoute)
+                {
+                    groundDelivery.SetStatus(dispatchWorld, request.OrderId, "pending", "Courier dispatched. A secure handoff location is being arranged.");
+                    WriteDeliveryStatus(new DeliveryDispatchStatus
+                    {
+                        requestId = request.RequestId, orderId = request.OrderId, kind = "stage",
+                        sequence = stages.Length + 1, message = "GROUND COURIER DISPATCHED — AWAIT HANDOFF"
+                    });
+                    float handoffTime = Time.unscaledTime + groundDelivery.DelaySeconds;
+                    while (Time.unscaledTime < handoffTime)
+                    {
+                        if (!TryGetRaidPlayer(out gameWorld, out player) || gameWorld != dispatchWorld || !HasFieldTerminal(player))
+                        {
+                            GroundDispatchFailed(request, dispatchWorld, stages.Length + 2, "FIELD TERMINAL LINK LOST — ORDER STILL READY");
+                            yield break;
+                        }
+                        yield return new WaitForSecondsRealtime(.25f);
+                    }
+                    bool requestOpen = true;
+                    Func<bool> access = () => requestOpen && TryGetRaidPlayer(out ClientGameWorld currentWorld, out Player currentPlayer)
+                        && currentWorld == dispatchWorld && HasFieldTerminal(currentPlayer);
+                    Task<Vector3> placement = groundDelivery.Deliver(dispatchWorld, request.OrderId, manifestSnapshot, access);
+                    try
+                    {
+                        while (!placement.IsCompleted)
+                        {
+                            if (!access())
+                            {
+                                GroundDispatchFailed(request, dispatchWorld, stages.Length + 2, "FIELD TERMINAL LINK LOST — ORDER STILL READY");
+                                placement.ContinueWith(faulted => { var observed = faulted.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+                                yield break;
+                            }
+                            yield return null;
+                        }
+                        if (placement.IsCanceled)
+                        {
+                            GroundDispatchFailed(request, dispatchWorld, stages.Length + 2, "COURIER CANCELLED — ORDER STILL READY");
+                            yield break;
+                        }
+                        if (placement.IsFaulted)
+                        {
+                            var error = placement.Exception.GetBaseException();
+                            Logger.LogWarning("[TSD] Ground dispatch was not completed: " + error);
+                            string reason = error is InvalidOperationException ? error.Message : "Ground delivery could not be completed. Your order remains ready to retry.";
+                            GroundDispatchFailed(request, dispatchWorld, stages.Length + 2, reason);
+                            yield break;
+                        }
+                        Vector3 groundPoint = placement.Result;
+                        _dispatchedOrderIds.Add(request.OrderId);
+                        SaveDispatchedOrders();
+                        WriteDeliveryStatus(new DeliveryDispatchStatus
+                        {
+                            requestId = request.RequestId, orderId = request.OrderId, kind = "success",
+                            sequence = stages.Length + 2, message = "COURIER CARGO READY FOR COLLECTION",
+                            completed = true, dropPoint = groundPoint.ToString()
+                        });
+                        yield break;
+                    }
+                    finally { requestOpen = false; }
+                }
+
                 AirdropDustRecolor.BeginTsdDropPointCapture();
                 gameWorld.InitAirdrop(
                     ActiveOrderCargoId,
@@ -616,6 +698,18 @@ namespace TacticalSupplyDrops.Client
                 _deliveryDispatchInProgress = false;
             }
         }
+
+        private void GroundDispatchFailed(DeliveryDispatchRequest request, ClientGameWorld world, int sequence, string reason)
+        {
+            groundDelivery.SetStatus(world, request.OrderId, "unavailable", reason);
+            WriteDeliveryStatus(new DeliveryDispatchStatus
+            {
+                requestId = request.RequestId, orderId = request.OrderId, kind = "error",
+                sequence = sequence, message = reason, completed = true
+            });
+        }
+
+        private void OnApplicationQuit() { groundDelivery?.Shutdown(); }
 
         private void WriteDeliveryStatus(DeliveryDispatchStatus status)
         {
@@ -1152,6 +1246,8 @@ namespace TacticalSupplyDrops.Client
         {
             public bool hasAccess;
             public bool inRaid;
+            public string nickname;
+            public string deliveryMethod;
             public string updatedUtc;
         }
 

@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.IO;
 using System.Threading.Tasks;
@@ -102,6 +102,8 @@ namespace TacticalSupplyDrops.Client
 
                 // Supply the game with the same Result type returned
                 // by its original backend request.
+                TsdCargoCrateName.Register(cargoData.data[0]._id);
+
                 __result = Task.FromResult(
                     new Result<AirdropContainerData>(cargoData));
 

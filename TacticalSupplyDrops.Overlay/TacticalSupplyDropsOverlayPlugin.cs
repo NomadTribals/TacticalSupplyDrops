@@ -1,6 +1,7 @@
 
 using BepInEx;
 using BepInEx.Configuration;
+using BepInEx.Bootstrap;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -45,11 +46,14 @@ namespace TacticalSupplyDrops.Overlay
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops.overlay",
     "nomadtribals-TacticalSupplyDropsOverlay",
-    "2.0.1")]
+    "2.1.0")]
     [BepInDependency("com.anvil.weboverlay", "1.11.0")]
+    [BepInDependency("com.nomadtribals.tacticalsupplydrops")]
     public class TacticalSupplyDropsOverlayPlugin : BaseUnityPlugin
     {
         private IWebOverlay overlay;
+        private ConfigFile unifiedConfig;
+        private TsdUnifiedConfig tabletSettings;
         private ConfigEntry<KeyCode> tabletToggleKey;
         private const string DefaultInterfaceColor = "#e0a43b";
         private ConfigEntry<string> tabletInterfaceColor;
@@ -109,11 +113,13 @@ namespace TacticalSupplyDrops.Overlay
             Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "procurement-purchase-response.json");
         private void Awake()
         {
-            tabletToggleKey = Config.Bind("Controls", "TabletToggleKey", KeyCode.F9, "Key used to open or close the Tactical Supply Drops tablet.");            tabletWindowX = Config.Bind("Window", "X", -1, "Tablet window horizontal position in screen pixels.");
-            tabletWindowY = Config.Bind("Window", "Y", -1, "Tablet window vertical position in screen pixels.");
-            tabletWindowWidth = Config.Bind("Window", "Width", 1200, "Tablet window width in screen pixels.");
-            tabletWindowHeight = Config.Bind("Window", "Height", 800, "Tablet window height in screen pixels.");
-            tabletInterfaceColor = Config.Bind("Appearance", "InterfaceColor", DefaultInterfaceColor, "Interface accent color as #RRGGBB. Shades adapt for readability. You can also change this on the tablet Config tab.");
+            unifiedConfig = Chainloader.PluginInfos["com.nomadtribals.tacticalsupplydrops"].Instance.Config;
+            tabletSettings = new TsdUnifiedConfig(unifiedConfig, Config.ConfigFilePath);
+            tabletToggleKey = tabletSettings.Bind("Controls", "TabletToggleKey", KeyCode.F9, "Key used to open or close the Tactical Supply Drops tablet.");            tabletWindowX = tabletSettings.Bind("Window", "X", -1, "Tablet window horizontal position in screen pixels.");
+            tabletWindowY = tabletSettings.Bind("Window", "Y", -1, "Tablet window vertical position in screen pixels.");
+            tabletWindowWidth = tabletSettings.Bind("Window", "Width", 1200, "Tablet window width in screen pixels.");
+            tabletWindowHeight = tabletSettings.Bind("Window", "Height", 800, "Tablet window height in screen pixels.");
+            tabletInterfaceColor = tabletSettings.Bind("Appearance", "InterfaceColor", DefaultInterfaceColor, "Interface accent color as #RRGGBB. Shades adapt for readability. You can also change this on the tablet Config tab.");
             if (NormalizeInterfaceColor(tabletInterfaceColor.Value) == null)
             {
                 Logger.LogWarning("Invalid interface color; using the default gold accent.");
@@ -131,6 +137,8 @@ namespace TacticalSupplyDrops.Overlay
         private float responseCheckTimer = 0f;
         private string lastDeliveryStatusJson = string.Empty;
         private string lastTabletAccessJson = string.Empty;
+        private string lastGroundCargoLocatorJson = string.Empty;
+        private static readonly string GroundCargoLocatorPath = Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "ground-cargo-locator.json");
 
         private void Update()
         {
@@ -151,6 +159,7 @@ namespace TacticalSupplyDrops.Overlay
                 CheckForOrderLookupComplete();
                 CheckDeliveryDispatchStatus();
                 CheckTabletAccessState();
+                CheckGroundCargoLocator();
             }
         }
 
@@ -177,7 +186,7 @@ namespace TacticalSupplyDrops.Overlay
             {
                 TabletWindowGesture gesture = JsonUtility.FromJson<TabletWindowGesture>(payload);
                 if (gesture == null) return;
-                if (gesture.mode == "end") { Config.Save(); return; }
+                if (gesture.mode == "end") { unifiedConfig.Save(); return; }
                 int maxWidth = Math.Max(1000, Screen.width);
                 int maxHeight = Math.Max(650, Screen.height);
                 if (gesture.mode == "move")
@@ -291,7 +300,7 @@ namespace TacticalSupplyDrops.Overlay
                     if (Enum.TryParse(payload, true, out requestedKey) && requestedKey != KeyCode.None && Enum.IsDefined(typeof(KeyCode), requestedKey))
                     {
                         tabletToggleKey.Value = requestedKey;
-                        Config.Save();
+                        unifiedConfig.Save();
                         suppressTabletToggleUntil = Time.unscaledTime + 0.35f;
                         Logger.LogInfo("TSD tablet hotkey saved: " + requestedKey);
                         created.ExecuteScript("window.overlay.onTabletHotkeySaved && window.overlay.onTabletHotkeySaved('" + requestedKey + "');");
@@ -311,7 +320,7 @@ namespace TacticalSupplyDrops.Overlay
                         return;
                     }
                     tabletInterfaceColor.Value = color;
-                    Config.Save();
+                    unifiedConfig.Save();
                     created.ExecuteScript("window.overlay.onInterfaceColorSaved && window.overlay.onInterfaceColorSaved('" + color + "');");
                     return;
                 }
@@ -408,6 +417,8 @@ namespace TacticalSupplyDrops.Overlay
                     Logger.LogInfo(
                         "TSD F9 page is ready. Sending stash data.");
 
+                    lastGroundCargoLocatorJson = string.Empty;
+                    CheckGroundCargoLocator();
                     string interfaceColor = NormalizeInterfaceColor(tabletInterfaceColor.Value) ?? DefaultInterfaceColor;
                     created.ExecuteScript("window.overlay.onInterfaceColorLoaded && window.overlay.onInterfaceColorLoaded('" + interfaceColor + "');");
                     created.ExecuteScript("window.overlay.onTabletHotkeyLoaded && window.overlay.onTabletHotkeyLoaded('" + tabletToggleKey.Value + "');");
@@ -2263,6 +2274,11 @@ namespace TacticalSupplyDrops.Overlay
         .housing-wear { background-image:radial-gradient(ellipse at 50% 50%,rgba(120,111,91,.16),rgba(8,10,10,.16) 38%,transparent 73%) left 8px top 45% / 27px 34px no-repeat,radial-gradient(ellipse at 50% 50%,rgba(120,111,91,.14),rgba(8,10,10,.16) 39%,transparent 74%) right 9px top 56% / 29px 36px no-repeat,linear-gradient(180deg,transparent 0 2px,rgba(0,0,0,.24) 4px,transparent 7px) left 15% top 0 / 70% 8px no-repeat,linear-gradient(180deg,transparent 0 2px,rgba(0,0,0,.22) 4px,transparent 7px) left 10% bottom 0 / 74% 8px no-repeat; }
         .tablet-link-indicator {position:absolute;z-index:35;top:-30px;right:116px;height:20px;min-width:78px;padding:0 7px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid #090c0d;border-radius:2px;background:linear-gradient(180deg,#080b0c,#1a2022 48%,#090c0d);box-shadow:inset 0 2px 4px rgba(0,0,0,.92),inset 0 0 0 1px rgba(100,108,108,.14),0 1px 0 rgba(132,139,139,.22);color:#777f80;font:700 6px/1 Arial,sans-serif;letter-spacing:1px;pointer-events:none;}
         .tablet-link-led {width:5px;height:5px;border-radius:50%;background:#3a4142;box-shadow:inset 0 1px 1px #080a0b,0 0 2px rgba(0,0,0,.8);}
+        .tablet-link-led.is-data-active {animation:tsd-data-write .97s steps(1,end) infinite;}
+        @keyframes tsd-data-write {
+            0%,19%,38%,72%,100% {background:#36543b;box-shadow:inset 0 1px 1px #080a0b;opacity:.45;}
+            4%,13%,25%,43%,49%,78%,87% {background:#a9efb2;box-shadow:0 0 7px rgba(132,232,147,.9),inset 0 1px 1px #dcffe1;opacity:1;}
+        }
         .tablet-link-icon {width:14px;height:13px;overflow:visible;fill:none;stroke:#555d5e;stroke-width:1.6;stroke-linecap:round;}
         .tablet-link-icon circle {fill:#555d5e;stroke:none;}
         .tablet-link-indicator.is-connected .tablet-link-led {background:#6da775;box-shadow:0 0 5px rgba(109,167,117,.7),inset 0 1px 1px rgba(255,255,255,.45);}
@@ -2323,6 +2339,15 @@ namespace TacticalSupplyDrops.Overlay
         .glass-reflection {box-shadow:inset 0 0 0 2px rgba(0,0,0,.68),inset 0 0 0 3px rgba(3,5,6,.48),inset 0 6px 10px rgba(0,0,0,.72),inset 8px 0 12px rgba(0,0,0,.68),inset -8px 0 12px rgba(0,0,0,.68),inset 0 -8px 12px rgba(0,0,0,.72);}
         .glass-reflection::after {opacity:.9;background:linear-gradient(135deg,rgba(0,0,0,.72),rgba(0,0,0,.34) 30%,transparent 74%) left top/112px 82px no-repeat,linear-gradient(225deg,rgba(0,0,0,.72),rgba(0,0,0,.34) 30%,transparent 74%) right top/112px 82px no-repeat,linear-gradient(45deg,rgba(0,0,0,.74),rgba(0,0,0,.34) 30%,transparent 74%) left bottom/112px 82px no-repeat,linear-gradient(315deg,rgba(0,0,0,.74),rgba(0,0,0,.34) 30%,transparent 74%) right bottom/112px 82px no-repeat,radial-gradient(ellipse at 27% 29%,rgba(218,225,218,.09),transparent 18%),radial-gradient(ellipse at 76% 68%,rgba(218,225,218,.07),transparent 15%),radial-gradient(ellipse at 35% 44%,rgba(180,194,190,.04),transparent 36%),linear-gradient(112deg,transparent 0 47%,rgba(226,231,225,.055) 50%,transparent 58%);}        .tablet-power-screen {position:absolute;z-index:27;inset:40px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:radial-gradient(ellipse at 50% 46%,rgba(38,35,25,.7),transparent 45%),linear-gradient(180deg,#080b0d,#040607 68%,#090b0c);opacity:0;visibility:hidden;pointer-events:none;transition:opacity .13s ease,visibility 0s linear .13s;}
         .app.tablet-booting .tablet-power-screen,.app.tablet-shutting-down .tablet-power-screen {opacity:1;visibility:visible;transition:opacity .12s ease;}
+        .tablet-operator {margin-top:8px;max-width:340px;color:rgb(var(--tsd-tone-c99a50, 201,154,80));font-size:11px;overflow-wrap:anywhere;}
+        .tablet-operator small {margin-right:7px;color:#8e9695;font-size:8px;letter-spacing:1.3px;}
+        #tablet-device-operator {overflow-wrap:anywhere;}
+        .tablet-welcome {display:none;text-align:center;max-width:min(75vw,600px);overflow-wrap:anywhere;}
+        .tablet-welcome-title {color:#a5aaa7;font-size:12px;letter-spacing:5px;}
+        #tablet-welcome-name {margin:18px 0 14px;color:rgb(var(--tsd-tone-c99a50, 201,154,80));font-size:clamp(24px,4vw,46px);line-height:1.15;}
+        .tablet-welcome-subtitle {color:#8d9692;font-size:9px;letter-spacing:2px;}
+        .app.tablet-welcoming .tablet-welcome {display:flex;flex-direction:column;align-items:center;animation:tablet-brand-arrival .25s ease-out both;}
+        .app.tablet-welcoming .tablet-power-logo,.app.tablet-welcoming .tablet-power-brand,.app.tablet-welcoming .tablet-power-subtitle,.app.tablet-welcoming .tablet-power-status,.app.tablet-welcoming .tablet-power-progress {display:none;}
         .tablet-power-splash {display:flex;flex-direction:column;align-items:center;gap:10px;transform:translateY(-2px);}
         .tablet-power-logo {width:64px;height:54px;filter:drop-shadow(0 0 10px rgba(var(--tsd-tone-c99a50, 201,154,80), .22));}
         .tablet-power-brand {color:rgb(var(--tsd-tone-c99a50, 201,154,80));font:700 11px/1 Arial,sans-serif;letter-spacing:2.1px;text-shadow:0 1px 3px #000;}
@@ -2432,6 +2457,10 @@ namespace TacticalSupplyDrops.Overlay
 .tablet-color-swatch {width:30px;height:30px;border:2px solid #8a9290;border-radius:4px;cursor:pointer;}
 .tablet-color-swatch[aria-pressed='true'] {outline:2px solid #e5e8e9;outline-offset:2px;}
 #tablet-color-status {margin-top:12px;color:#b9c1bc;font-size:12px;line-height:1.5;}
+ .ground-cargo-guidance {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0;color:var(--text);font-size:14px;}
+.ground-cargo-guidance strong:first-child {color:var(--orange-bright);font-size:22px;}
+.ground-cargo-guidance span {grid-column:1 / -1;color:var(--muted);font-size:12px;}
+.ground-cargo-guidance[hidden] {display:none;}
 </style>
 </head>
 
@@ -2471,7 +2500,7 @@ namespace TacticalSupplyDrops.Overlay
         <span class='tablet-resize-handle tablet-resize--bl' data-corner='bl' title='Drag corner to resize tablet'></span>
         <span class='tablet-resize-handle tablet-resize--br' data-corner='br' title='Drag corner to resize tablet'></span>
         <div class='screen-well' aria-hidden='true'></div>
-        <div class='tablet-power-screen' aria-hidden='true'><div class='tablet-power-splash'><svg class='tablet-power-logo' viewBox='0 0 120 100' xmlns='http://www.w3.org/2000/svg'><defs><linearGradient id='tsdBootGold' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#f3d49a'/><stop offset='.52' stop-color='#c99a50'/><stop offset='1' stop-color='#805523'/></linearGradient></defs><g fill='url(#tsdBootGold)' stroke='#f0c77e' stroke-width='.8'><path d='M49 38 L5 17 L27 19 L7 8 L38 16 L23 3 L53 15 L60 25 L67 15 L97 3 L82 16 L113 8 L93 19 L115 17 L71 38 Z'/><path d='M7 17 L43 31 L39 35 L5 22 Z' opacity='.78'/><path d='M113 17 L77 31 L81 35 L115 22 Z' opacity='.78'/><path d='M17 29 L45 39 L41 43 L13 34 Z' opacity='.68'/><path d='M103 29 L75 39 L79 43 L107 34 Z' opacity='.68'/></g><path d='M37 39 C39 19 49 8 60 7 C71 8 81 19 83 39 C76 47 68 50 60 50 C52 50 44 47 37 39 Z' fill='#17191a' stroke='url(#tsdBootGold)' stroke-width='3'/><path d='M40 37 Q60 20 80 37 M50 14 L54 46 M60 8 L60 49 M70 14 L66 46' fill='none' stroke='#c99a50' stroke-width='1.4'/><path d='M60 48 L60 67 M48 41 L57 67 M72 41 L63 67' stroke='#e5bd78' stroke-width='1.3' fill='none'/><path d='M51 66 L60 58 L69 66 L65 77 L55 77 Z' fill='url(#tsdBootGold)' stroke='#f3d49a' stroke-width='1'/><path d='M55 78 L60 84 L65 78' fill='none' stroke='#e5bd78' stroke-width='1.5'/></svg><div class='tablet-power-brand'>TACTICAL SUPPLY DROPS</div><div class='tablet-power-subtitle'>PRIVATE AIR LOGISTICS</div><div class='tablet-power-status'>POWERING FIELD TERMINAL</div><div class='tablet-power-progress'><span></span></div></div></div>
+        <div class='tablet-power-screen' aria-hidden='true'><div class='tablet-power-splash'><svg class='tablet-power-logo' viewBox='0 0 120 100' xmlns='http://www.w3.org/2000/svg'><defs><linearGradient id='tsdBootGold' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#f3d49a'/><stop offset='.52' stop-color='#c99a50'/><stop offset='1' stop-color='#805523'/></linearGradient></defs><g fill='url(#tsdBootGold)' stroke='#f0c77e' stroke-width='.8'><path d='M49 38 L5 17 L27 19 L7 8 L38 16 L23 3 L53 15 L60 25 L67 15 L97 3 L82 16 L113 8 L93 19 L115 17 L71 38 Z'/><path d='M7 17 L43 31 L39 35 L5 22 Z' opacity='.78'/><path d='M113 17 L77 31 L81 35 L115 22 Z' opacity='.78'/><path d='M17 29 L45 39 L41 43 L13 34 Z' opacity='.68'/><path d='M103 29 L75 39 L79 43 L107 34 Z' opacity='.68'/></g><path d='M37 39 C39 19 49 8 60 7 C71 8 81 19 83 39 C76 47 68 50 60 50 C52 50 44 47 37 39 Z' fill='#17191a' stroke='url(#tsdBootGold)' stroke-width='3'/><path d='M40 37 Q60 20 80 37 M50 14 L54 46 M60 8 L60 49 M70 14 L66 46' fill='none' stroke='#c99a50' stroke-width='1.4'/><path d='M60 48 L60 67 M48 41 L57 67 M72 41 L63 67' stroke='#e5bd78' stroke-width='1.3' fill='none'/><path d='M51 66 L60 58 L69 66 L65 77 L55 77 Z' fill='url(#tsdBootGold)' stroke='#f3d49a' stroke-width='1'/><path d='M55 78 L60 84 L65 78' fill='none' stroke='#e5bd78' stroke-width='1.5'/></svg><div class='tablet-power-brand'>TACTICAL SUPPLY DROPS</div><div class='tablet-power-subtitle'>PRIVATE AIR LOGISTICS</div><div class='tablet-power-status'>POWERING FIELD TERMINAL</div><div class='tablet-power-progress'><span></span></div><div class='tablet-welcome'><span class='tablet-welcome-title'>WELCOME</span><strong id='tablet-welcome-name'>OPERATOR</strong><span class='tablet-welcome-subtitle'>YOUR FIELD TERMINAL IS READY</span></div></div></div>
         <div class='housing-wear' aria-hidden='true'></div>
         <div class='tablet-engraving' aria-hidden='true' title='Drag to move tablet'>TSD // FIELD TERMINAL</div>
         <div class='tablet-link-indicator' aria-label='TSD wireless link waiting' title='Waiting for TSD communication'><span class='tablet-link-led'></span><span>TSD LINK</span><svg class='tablet-link-icon' viewBox='0 0 20 18' aria-hidden='true'><path d='M2 6 Q10 -1 18 6 M5 9 Q10 4 15 9 M8 12 Q10 10 12 12'/><circle cx='10' cy='15' r='1.5'/></svg></div>
@@ -2518,6 +2547,7 @@ namespace TacticalSupplyDrops.Overlay
                     <div class='brand-subtitle'>
                         PRIVATE AIR LOGISTICS
                     </div>
+                    <div class='tablet-operator'><small>OPERATOR</small> <span id='tablet-operator-name'>AWAITING PROFILE</span></div>
                 </div>
             </div>
 
@@ -2724,14 +2754,24 @@ namespace TacticalSupplyDrops.Overlay
                 <div>
                     <div class='eyebrow'>LOGISTICS OPERATIONS // 02</div>
                     <div class='section-title'>FIELD DELIVERY</div>
-                    <div class='section-description'>Authenticate the terminal and release an accepted cargo order to a nearby safe airdrop point.</div>
+                    <div class='section-description'>Authenticate the terminal and release an accepted cargo order through your secure field link.</div>
                 </div>
                 <div class='classification'>SECURE FIELD LINK</div>
             </section>
             <section class='delivery-console'>
                 <div>
                     <div class='delivery-console-title'>TACTICAL DISPATCH CONTROL</div>
-                    <div class='delivery-console-subtitle'>A short encrypted handshake confirms the order, triangulates your position, and tasks the aircraft. The plane selects the nearest valid delivery point.</div>
+                    <div id='delivery-method' class='manifest-note' style='margin:8px 0'>DELIVERY METHOD: ENTER RAID TO CONFIRM</div>
+                    <div class='delivery-console-subtitle'>A short encrypted handshake confirms your order and terminal position. TSD coordinates the available delivery route and confirms the handoff.</div>
+                    <div id='ground-cargo-locator' class='delivery-cargo-card' style='margin-top:18px' hidden>
+                        <div class='delivery-cargo-label'>GROUND COURIER TRACKING</div>
+                        <div id='ground-cargo-status' class='delivery-cargo-value'>CARGO BEACON ACTIVE</div>
+                        <div id='ground-cargo-guidance' class='ground-cargo-guidance'>
+                            <strong id='ground-cargo-distance'></strong><strong id='ground-cargo-direction'></strong>
+                            <span id='ground-cargo-level'></span>
+                        </div>
+                        <div id='ground-cargo-hint' class='manifest-note'></div>
+                    </div>
                     <div class='delivery-cargo-card' style='margin-top:18px'>
                         <div class='delivery-cargo-label'>ACCEPTED CARGO MANIFEST</div>
                         <div id='delivery-cargo-value' class='delivery-cargo-value'>NO VERIFIED ORDER LOADED</div>
@@ -2844,10 +2884,11 @@ namespace TacticalSupplyDrops.Overlay
                 <div class='panel-header'><span class='panel-title'>DEVICE INFORMATION</span><span class='eyebrow'>SYSTEM RECORD // TSD-FT-01</span></div>
                 <div class='tablet-about-grid'>
                     <div class='tablet-about-entry'><span>TERMINAL</span><strong>TSD FIELD TERMINAL</strong></div>
-                    <div class='tablet-about-entry'><span>FIRMWARE</span><strong>TSD FIELD OS // 0.3.0</strong></div>
-                    <div class='tablet-about-entry'><span>MOD VERSION</span><strong>2.0.1</strong></div>
+                    <div class='tablet-about-entry'><span>FIRMWARE</span><strong>TSD FIELD OS // 0.4.0</strong></div>
+                    <div class='tablet-about-entry'><span>MOD VERSION</span><strong>2.1.0</strong></div>
                     <div class='tablet-about-entry'><span>DEVICE ID</span><strong>TSD-FT-01-0047</strong></div>
-                    <div class='tablet-about-entry tablet-about-owner'><span>OPERATOR / OWNER</span><strong>TACTICAL SUPPLY DROPS PRIVATE LOGISTICS</strong></div>
+                    <div class='tablet-about-entry'><span>REGISTERED OPERATOR</span><strong id='tablet-device-operator'>AWAITING PROFILE</strong></div>
+                    <div class='tablet-about-entry tablet-about-owner'><span>NETWORK OWNER</span><strong>TACTICAL SUPPLY DROPS PRIVATE LOGISTICS</strong></div>
                     <div class='tablet-about-entry'><span>FOUNDER &amp; CEO</span><strong>NOMADTRIBALS</strong></div>
                 </div>
                 <div class='tablet-about-ip'><span>INTELLECTUAL PROPERTY</span><strong>© 2026 TACTICAL SUPPLY DROPS PRIVATE LOGISTICS. ALL RIGHTS RESERVED.</strong></div>
@@ -2860,7 +2901,7 @@ namespace TacticalSupplyDrops.Overlay
             </span>
 
             <span>
-                REQUISITION TERMINAL // 2.0.1
+                REQUISITION TERMINAL // 2.1.0
             </span>
         </footer>
 
@@ -2868,6 +2909,18 @@ namespace TacticalSupplyDrops.Overlay
 
 
 <script>
+    const tabletDataOperations = new Set();
+    function setTabletDataActivity(operation, active) {
+        if (active) tabletDataOperations.add(operation);
+        else tabletDataOperations.delete(operation);
+        const led = document.querySelector('.tablet-link-led');
+        if (led) {
+            const busy = tabletDataOperations.size > 0;
+            led.classList.toggle('is-data-active', busy);
+            led.title = busy ? 'Data activity: processing TSD requests' : 'Data activity: idle';
+        }
+    }
+
     const tabletSoundToggle = document.getElementById('tablet-sounds-toggle');
     const tabletSoundStatus = document.getElementById('tablet-sound-status');
     const tabletVolumeDisplay = document.getElementById('tablet-volume-level');
@@ -3078,7 +3131,7 @@ namespace TacticalSupplyDrops.Overlay
         if (!tabletRoot) return;
         clearTabletSequenceTimers();
         tabletVisible = true;
-        tabletRoot.classList.remove('tablet-shutting-down', 'tablet-booting');
+        tabletRoot.classList.remove('tablet-shutting-down', 'tablet-booting', 'tablet-welcoming');
         void tabletRoot.offsetWidth;
         tabletRoot.classList.add('tablet-booting');
         if (tabletPowerStatus) tabletPowerStatus.textContent = 'POWERING FIELD TERMINAL';
@@ -3088,14 +3141,17 @@ namespace TacticalSupplyDrops.Overlay
         tabletSequenceTimers.push(setTimeout(() => { if (tabletPowerStatus) tabletPowerStatus.textContent = 'ESTABLISHING TSD LINK // 79%'; }, 860));
         tabletSequenceTimers.push(setTimeout(() => { if (tabletPowerStatus) tabletPowerStatus.textContent = 'VERIFYING FIELD TERMINAL // 96%'; }, 1150));
         tabletSequenceTimers.push(setTimeout(() => {
-            tabletRoot.classList.remove('tablet-booting');
+            tabletRoot.classList.add('tablet-welcoming');
+        }, 1370));
+        tabletSequenceTimers.push(setTimeout(() => {
+            tabletRoot.classList.remove('tablet-booting', 'tablet-welcoming');
             if (tabletPowerStatus) tabletPowerStatus.textContent = 'SYSTEM READY';
             if (tabletSoundEnabled) startTabletHum();
-        }, 1370));
+        }, 2470));
     }    function beginTabletShutdown() {
         if (!tabletRoot || !tabletVisible || tabletRoot.classList.contains('tablet-shutting-down')) return;
         clearTabletSequenceTimers();
-        tabletRoot.classList.remove('tablet-booting');
+        tabletRoot.classList.remove('tablet-booting', 'tablet-welcoming');
         tabletRoot.classList.add('tablet-shutting-down');
         if (tabletPowerStatus) tabletPowerStatus.textContent = 'POWERING DOWN';
         stopTabletHum();
@@ -3107,7 +3163,7 @@ namespace TacticalSupplyDrops.Overlay
     }
     window.overlay.beginTabletShutdown = beginTabletShutdown;    window.overlay.setTabletVisible = function(visible) {
         if (visible) beginTabletStartup();
-        else { tabletVisible = false; clearTabletSequenceTimers(); stopTabletHum(); }
+        else { tabletVisible = false; clearTabletSequenceTimers(); tabletRoot?.classList.remove('tablet-welcoming'); stopTabletHum(); }
     };    if (tabletSoundToggle) tabletSoundToggle.addEventListener('click', () => {
         tabletSoundEnabled = !tabletSoundEnabled; tabletStorage.set('tsd-tablet-sounds', tabletSoundEnabled ? 'true' : 'false'); syncTabletSoundUi();
         if (tabletSoundEnabled) startTabletHum(); else stopTabletHum();
@@ -3210,15 +3266,16 @@ mainNavButtons.forEach(button => {
         switchMainView(button.dataset.view);
     });
 });
-let procurementPending = false;
+let procurementPending = false; setTabletDataActivity('procurementPending', false);
 let procurementCatalog = { traders: [], offers: [] };
-let procurementTraderId = '';
+let procurementTraderId = tabletStorage.get('tsd-last-trader') || '';
 let procurementPage = 0;
-let procurementLoading = false;
+let procurementLoading = false; setTabletDataActivity('procurementLoading', false);
 const procurementStatus = document.getElementById('procurement-status');
 const procurementTabs = document.getElementById('procurement-traders');
 const procurementOffers = document.getElementById('procurement-offers');
 const procurementSearch = document.getElementById('procurement-search');
+procurementSearch.value = tabletStorage.get('tsd-procurement-search') || '';
 function updateProcurementStatus(message) { if (procurementStatus) procurementStatus.textContent = message; }
 function updateRoubleBalance(value) {
     if (!Number.isSafeInteger(value) || value < 0) return;
@@ -3241,14 +3298,14 @@ function procurementElement(tag, className, text) {
 function requestProcurementCatalog(traderId) {
     if (procurementPending) return;
     if (traderId !== undefined) procurementTraderId = traderId;
-    procurementLoading = true;
+    procurementLoading = true; setTabletDataActivity('procurementLoading', true);
     procurementPage = 0;
     updateProcurementStatus('LOADING TRADER STOCK...');
     renderProcurementOffers();
     window.overlay.send('tsd-procurement-refresh', JSON.stringify({ TraderId: procurementTraderId }));
 }
 window.overlay.onProcurementCatalogReceived = function(data) {
-    procurementLoading = false;
+    procurementLoading = false; setTabletDataActivity('procurementLoading', false);
     if (!data || !data.success) {
         updateProcurementStatus((data && data.message) || 'TRADER STOCK UNAVAILABLE — TRY REFRESH');
         renderProcurementOffers();
@@ -3256,6 +3313,7 @@ window.overlay.onProcurementCatalogReceived = function(data) {
     }
     procurementCatalog = data;
     procurementTraderId = data.traderId;
+    tabletStorage.set('tsd-last-trader', procurementTraderId || '');
     updateRoubleBalance(data.balanceRoubles);
     updateWalletBalances(data.wallet);
     procurementTabs.replaceChildren();
@@ -3344,7 +3402,7 @@ function renderProcurementOffers() {
             const scheme = schemes[Number(schemePicker.value)];
             if (!Number.isSafeInteger(amount) || amount < 1 || amount > maximum || !scheme || !scheme.supported) return;
             const requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 12);
-            procurementPending = true;
+            procurementPending = true; setTabletDataActivity('procurementPending', true);
             updateProcurementStatus('PURCHASING FROM TRADER...');
             renderProcurementOffers();
             window.overlay.send('tsd-procurement-purchase', JSON.stringify({ data: [{
@@ -3357,17 +3415,17 @@ function renderProcurementOffers() {
         card.appendChild(controls); procurementOffers.appendChild(card); updateOffer();
     });
 }
-procurementSearch.addEventListener('input', () => { procurementPage = 0; renderProcurementOffers(); });
+procurementSearch.addEventListener('input', () => { tabletStorage.set('tsd-procurement-search', procurementSearch.value); procurementPage = 0; renderProcurementOffers(); });
 document.getElementById('procurement-refresh').addEventListener('click', () => requestProcurementCatalog());
 document.getElementById('procurement-review-cargo').addEventListener('click', () => switchMainView('cargo'));
 document.getElementById('procurement-prev').addEventListener('click', () => { procurementPage--; renderProcurementOffers(); });
 document.getElementById('procurement-next').addEventListener('click', () => { procurementPage++; renderProcurementOffers(); });
 window.overlay.onProcurementStatusReceived = function(message) {
     updateProcurementStatus(message);
-    if (message === 'PURCHASE REQUEST FAILED') { procurementPending = false; renderProcurementOffers(); }
+    if (message === 'PURCHASE REQUEST FAILED') { procurementPending = false; setTabletDataActivity('procurementPending', false); renderProcurementOffers(); }
 };
 window.overlay.onProcurementResponseReceived = function(responseJson) {
-    procurementPending = false;
+    procurementPending = false; setTabletDataActivity('procurementPending', false);
     let message = 'PURCHASE COULD NOT BE VERIFIED — REFRESH BEFORE RETRYING';
     try {
         const response = JSON.parse(responseJson);
@@ -3390,11 +3448,11 @@ window.overlay.onProcurementResponseReceived = function(responseJson) {
     renderProcurementOffers();
 };
 
-    let orderPending = false;
+    let orderPending = false; setTabletDataActivity('orderPending', false);
     let activeDeliveryOrder = null;
     let deliveryTerminalAccess = false;
     let deliveryInRaid = false;
-    let deliveryDispatchPending = false;
+    let deliveryDispatchPending = false; setTabletDataActivity('deliveryDispatchPending', false);
     let lastDeliverySequence = 0;
     let selectedItems = {};
 
@@ -4381,7 +4439,7 @@ function loadStash(data) {
                 ? 'ORDER ALREADY DISPATCHED'
                 : deliveryDispatchPending
                     ? 'DISPATCH SEQUENCE ACTIVE'
-                    : 'CONFIRM CARGO DELIVERY';
+                    : activeDeliveryOrder && activeDeliveryOrder.retryable ? 'RETRY CARGO DELIVERY' : 'CONFIRM CARGO DELIVERY';
         }
     }
 
@@ -4393,7 +4451,7 @@ function loadStash(data) {
 
         const requestId = Date.now().toString() + '-' +
             Math.random().toString(36).substring(2, 9);
-        deliveryDispatchPending = true;
+        deliveryDispatchPending = true; setTabletDataActivity('deliveryDispatchPending', true);
         lastDeliverySequence = 0;
         const sequence = document.getElementById('delivery-sequence');
         if (sequence) sequence.replaceChildren();
@@ -4414,7 +4472,40 @@ function loadStash(data) {
         confirmDeliveryButton.addEventListener('click', confirmCargoDelivery);
     }
 
+    window.overlay.onGroundCargoLocatorReceived = function(state) {
+        const card = document.getElementById('ground-cargo-locator');
+        if (!card) return;
+        card.hidden = !(state && (state.available || state.phase === 'pending' || state.phase === 'unavailable'));
+        if (card.hidden) return;
+        const collected = !!state.collected;
+        const operatorName = document.getElementById('tablet-operator-name')?.textContent;
+        const personalName = operatorName && operatorName !== 'AWAITING PROFILE' ? ', ' + operatorName : '';
+        const pending = state.phase === 'pending';
+        const unavailable = state.phase === 'unavailable';
+        document.getElementById('ground-cargo-status').textContent = pending ? 'COURIER HANDOFF PENDING' : unavailable ? 'DELIVERY NOT PLACED' : collected ? 'CARGO RECOVERED' : 'CARGO BEACON ACTIVE';
+        document.getElementById('ground-cargo-guidance').hidden = !state.available || collected;
+        document.getElementById('ground-cargo-distance').textContent = Number.isFinite(state.distance) ? Math.max(0, state.distance).toFixed(1) + ' m' : 'LOCATING';
+        document.getElementById('ground-cargo-direction').textContent = state.direction || '';
+        document.getElementById('ground-cargo-level').textContent = state.level || '';
+        document.getElementById('ground-cargo-hint').textContent = pending || unavailable ? (state.message || 'Check courier status.') : collected
+            ? 'Cargo recovered.'
+            : (state.testOnly ? 'Prototype shipment: one test bandage. ' : '') + 'Your cargo is ready for collection' + personalName + '. Thank you for choosing TSD. Follow the tablet guidance; look for the orange light and listen for the nearby beeper.';
+    };
+
+    function updatePlayerIdentity(nickname) {
+        const name = typeof nickname === 'string' ? nickname.trim() : '';
+        for (const id of ['tablet-welcome-name', 'tablet-operator-name', 'tablet-device-operator']) {
+            const element = document.getElementById(id);
+            if (element) element.textContent = name || (id === 'tablet-welcome-name' ? 'OPERATOR' : 'AWAITING PROFILE');
+        }
+    }
+
     window.overlay.onTabletAccessReceived = function(state) {
+        updatePlayerIdentity(state && state.nickname);
+        const method = document.getElementById('delivery-method');
+        if (method) method.textContent = 'DELIVERY METHOD: ' + (state && state.inRaid
+            ? state.deliveryMethod === 'courier' ? 'GROUND COURIER' : state.deliveryMethod === 'aircraft' ? 'AIRCRAFT DELIVERY' : 'CONFIRMING ROUTE'
+            : 'ENTER RAID TO CONFIRM');
         deliveryTerminalAccess = !!(state && state.hasAccess);
         deliveryInRaid = !!(state && state.inRaid);
         updateDeliveryControls();
@@ -4438,7 +4529,7 @@ function loadStash(data) {
                 : 'Confirm a cargo manifest on Cargo, then dispatch it during raid.';
         }
         if (newOrder) {
-            deliveryDispatchPending = false;
+            deliveryDispatchPending = false; setTabletDataActivity('deliveryDispatchPending', false);
             lastDeliverySequence = 0;
             const sequence = document.getElementById('delivery-sequence');
             if (sequence) sequence.replaceChildren();
@@ -4446,7 +4537,7 @@ function loadStash(data) {
             if (status) status.textContent = 'STANDING BY FOR SECURE DISPATCH';
         }
         if (activeDeliveryOrder && activeDeliveryOrder.alreadyDispatched) {
-            deliveryDispatchPending = false;
+            deliveryDispatchPending = false; setTabletDataActivity('deliveryDispatchPending', false);
             const status = document.getElementById('delivery-status');
             if (status) status.textContent = 'THIS CARGO ORDER HAS ALREADY BEEN DISPATCHED';
         }
@@ -4476,10 +4567,16 @@ function loadStash(data) {
             lastDeliverySequence = result.sequence;
             playTabletSound('data-write');
         }
-        if (statusElement && result.message) statusElement.textContent = result.message;
+        if (statusElement && result.message) {
+            if (result.completed && result.kind === 'success' && result.message === 'COURIER CARGO READY FOR COLLECTION') {
+                const operator = document.getElementById('tablet-operator-name')?.textContent;
+                const name = operator && operator !== 'AWAITING PROFILE' ? ', ' + operator : '';
+                statusElement.textContent = 'Your cargo is ready for collection' + name + '. Thank you for choosing TSD.';
+            } else statusElement.textContent = result.message;
+        }
 
         if (result.completed) {
-            deliveryDispatchPending = false;
+            deliveryDispatchPending = false; setTabletDataActivity('deliveryDispatchPending', false);
             if (result.kind === 'success') {
                 if (activeDeliveryOrder && result.orderId === activeDeliveryOrder.orderId) {
                     activeDeliveryOrder.alreadyDispatched = true;
@@ -4489,8 +4586,14 @@ function loadStash(data) {
                     entry.textContent = 'AIRCRAFT TASKED // CARGO ON THE WAY';
                     entry.classList.add('complete');
                     sequence.appendChild(entry);
+                } else if (sequence && result.message === 'COURIER CARGO READY FOR COLLECTION') {
+                    const entry = document.createElement('li');
+                    entry.textContent = 'LOCAL COURIER HANDOFF CONFIRMED // CARGO READY';
+                    entry.classList.add('complete');
+                    sequence.appendChild(entry);
                 }
             } else {
+                if (activeDeliveryOrder) activeDeliveryOrder.retryable = true;
                 if (sequence && result.sequence > 0) {
                     const entry = document.createElement('li');
                     entry.textContent = result.message || 'DISPATCH FAILED';
@@ -4538,7 +4641,7 @@ function loadStash(data) {
             ]
         };
 
-        orderPending = true;
+        orderPending = true; setTabletDataActivity('orderPending', true);
 
         const submitButton =
             document.getElementById('submit-order');
@@ -4570,7 +4673,7 @@ function loadStash(data) {
         updateOrderStatus(message);
 
         if (message === 'ORDER REQUEST FAILED') {
-            orderPending = false;
+            orderPending = false; setTabletDataActivity('orderPending', false);
 
             const button =
                 document.getElementById('submit-order');
@@ -4598,7 +4701,7 @@ function loadStash(data) {
             );
 
             updateOrderStatus('INVALID CLIENT RESPONSE');
-            orderPending = false;
+            orderPending = false; setTabletDataActivity('orderPending', false);
 
             const button =
                 document.getElementById('submit-order');
@@ -4631,7 +4734,7 @@ function loadStash(data) {
                     'SERVER RESPONSE COULD NOT BE VERIFIED'
                 );
 
-                orderPending = false;
+                orderPending = false; setTabletDataActivity('orderPending', false);
 
                 const button =
                     document.getElementById('submit-order');
@@ -4696,7 +4799,7 @@ function loadStash(data) {
             }
         }
 
-        orderPending = false;
+        orderPending = false; setTabletDataActivity('orderPending', false);
 
         const button =
             document.getElementById('submit-order');
@@ -4799,6 +4902,39 @@ function loadStash(data) {
             }
         }
 
+        [Serializable]
+        private class GroundCargoLocatorState
+        {
+            public bool available;
+            public bool testOnly;
+            public string phase;
+            public string message;
+            public bool collected;
+            public float distance;
+            public string direction;
+            public string level;
+            public long updatedAtUnixMs;
+        }
+
+        private void CheckGroundCargoLocator()
+        {
+            if (overlay == null) return;
+            try
+            {
+                GroundCargoLocatorState state = null;
+                if (File.Exists(GroundCargoLocatorPath))
+                    state = JsonUtility.FromJson<GroundCargoLocatorState>(File.ReadAllText(GroundCargoLocatorPath));
+                if (state == null || (!state.available && state.phase != "pending" && state.phase != "unavailable") || state.updatedAtUnixMs <= 0 ||
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - state.updatedAtUnixMs > 3000)
+                    state = new GroundCargoLocatorState();
+                string json = JsonUtility.ToJson(state);
+                if (json == lastGroundCargoLocatorJson) return;
+                overlay.ExecuteScript("window.overlay.onGroundCargoLocatorReceived && window.overlay.onGroundCargoLocatorReceived(" + json + ");");
+                lastGroundCargoLocatorJson = json;
+            }
+            catch (Exception ex) { Logger.LogDebug("Courier locator read deferred: " + ex.Message); }
+        }
+
         private void CheckTabletAccessState()
         {
             try
@@ -4826,6 +4962,16 @@ function loadStash(data) {
                 hasAccess = allowed,
                 inRaid = allowed && inRaid
             };
+            if (allowed)
+            {
+                try
+                {
+                    var state = JsonUtility.FromJson<TabletAccessState>(File.ReadAllText(TabletAccessPath));
+                    message.nickname = state?.nickname;
+                    message.deliveryMethod = state?.deliveryMethod;
+                }
+                catch { message.nickname = null; }
+            }
             overlay.ExecuteScript(
                 "window.overlay.onTabletAccessReceived && " +
                 "window.overlay.onTabletAccessReceived(" +
@@ -4858,6 +5004,8 @@ function loadStash(data) {
                             DeliveryDispatchStatus status =
                                 JsonUtility.FromJson<DeliveryDispatchStatus>(
                                     File.ReadAllText(DeliveryDispatchStatusPath));
+                            message.retryable = status != null && status.completed && status.kind == "error" &&
+                                string.Equals(status.orderId, message.orderId, StringComparison.OrdinalIgnoreCase);
                             message.alreadyDispatched = status != null &&
                                 status.completed && status.kind == "success" &&
                                 string.Equals(status.orderId, message.orderId,
@@ -5222,6 +5370,8 @@ function loadStash(data) {
         {
             public bool hasAccess;
             public bool inRaid;
+            public string nickname;
+            public string deliveryMethod;
             public string updatedUtc;
         }
 
@@ -5230,6 +5380,8 @@ function loadStash(data) {
         {
             public bool hasAccess;
             public bool inRaid;
+            public string nickname;
+            public string deliveryMethod;
         }
 
         [Serializable]
@@ -5239,6 +5391,7 @@ function loadStash(data) {
             public string orderId;
             public int itemCount;
             public bool alreadyDispatched;
+            public bool retryable;
             public bool inRaid;
         }
 

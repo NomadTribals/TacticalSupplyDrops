@@ -20,6 +20,8 @@ namespace TacticalSupplyDrops.Client
             new HashSet<int>();
 
 
+        private static readonly HashSet<int> BrandingAttempts = new HashSet<int>();
+
         private static bool _capturingDropPoint;
         private static Vector3? _capturedDropPoint;
         private static Vector3? _tsdDropPoint;
@@ -88,6 +90,14 @@ namespace TacticalSupplyDrops.Client
                     "drop point; applying orange smoke.");
             }
 
+            // Reuse the established TSD-only identification used for orange smoke.
+            // Branding is attached to the moving crate, leaving the native flight and landing logic intact.
+            if (__instance._syncObject != null && BrandingAttempts.Add(instanceId))
+            {
+                try { TsdCrateBranding.Attach(__instance._syncObject, text => _logger?.LogInfo("[Air cargo branding] " + text)); }
+                catch (Exception ex) { _logger?.LogWarning("[TSD] Air cargo remains available; branding could not attach: " + ex.Message); }
+            }
+
             try
             {
                 RecolorEffect(__instance._airdropFlare);
@@ -103,6 +113,9 @@ namespace TacticalSupplyDrops.Client
         {
             if (drop == null) return;
             TaggedAirdrops.Remove(RuntimeHelpers.GetHashCode(drop));
+            BrandingAttempts.Remove(RuntimeHelpers.GetHashCode(drop));
+            if (drop._syncObject != null)
+                foreach (var branding in drop._syncObject.GetComponentsInChildren<TsdCrateBranding>(true)) branding.Release();
             if (drop._airdropFlare != null)
                 drop._airdropFlare.GetComponent<TsdSmokeTint>()?.Restore();
             if (drop._airdropDust != null)
