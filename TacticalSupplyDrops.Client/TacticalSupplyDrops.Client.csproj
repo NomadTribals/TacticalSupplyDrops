@@ -5,9 +5,9 @@
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<Nullable>enable</Nullable>
 
-		<Version>2.1.0</Version>
-		<AssemblyVersion>2.1.0.0</AssemblyVersion>
-		<FileVersion>2.1.0.0</FileVersion>
+		<Version>3.0.0</Version>
+		<AssemblyVersion>3.0.0.0</AssemblyVersion>
+		<FileVersion>3.0.0.0</FileVersion>
 		<Product>Tactical Supply Drops</Product>
 		<Company>nomadtribals</Company>
 		<Description>Tactical Supply Drops client plugin.</Description>
@@ -72,4 +72,4 @@
 	  <Exec Command="if /I &quot;$(Configuration)&quot;==&quot;Debug&quot; (&#xA;    robocopy &quot;$(TargetDir).&quot; &quot;$(SptRoot)\BepInEx\plugins\TacticalSupplyDrops&quot; &quot;$(TargetFileName)&quot; /COPY:DAT /IS /IT /R:2 /W:1&#xA;    if errorlevel 8 exit /b 1&#xA;    exit /b 0&#xA;)" />
 	</Target>
 
-</Project>
+<ItemGroup><ProjectReference Include="..\TsdTechnologies.Api\TsdTechnologies.Api.csproj" /></ItemGroup></Project>

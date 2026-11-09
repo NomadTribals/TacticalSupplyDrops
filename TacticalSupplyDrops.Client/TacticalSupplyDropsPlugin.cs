@@ -1,4 +1,5 @@
 using BepInEx;
+using TsdTechnologies.Api;
 using Comfort.Common;
 using EFT;
 using EFT.InventoryLogic;
@@ -49,8 +50,9 @@ namespace TacticalSupplyDrops.Client
 
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops",
-    "Tactical Supply Drops",
-    "2.1.0")]
+    "TSD Logistics",
+    "3.0.0")]
+    [BepInDependency(TabletRuntime.PluginGuid, "1.0.0")]
     public class TacticalSupplyDropsPlugin : BaseUnityPlugin
     {
 
@@ -74,7 +76,7 @@ namespace TacticalSupplyDrops.Client
             Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops");
 
         private const string FieldTerminalTemplateId =
-            "6a0000000000000000000002";
+            TabletRuntime.TerminalTemplateId;
 
         private const string ActiveOrderCargoId = "TSD_ACTIVE_ORDER";
 
@@ -315,45 +317,6 @@ namespace TacticalSupplyDrops.Client
             return false;
         }
 
-        private bool HasFieldTerminalOutsideRaid()
-        {
-            // The terminal may still be equipped on the PMC while at the main menu.
-            // Tarkov registers this application under the generic base type.
-            if (Singleton<ClientApplication<IEftSession>>.Instantiated)
-            {
-                var session = Singleton<ClientApplication<IEftSession>>.Instance
-                    .GetClientBackEndSession();
-                var inventory = session?.Profile?.InventoryInfo;
-                if (inventory != null)
-                {
-                    foreach (Item item in inventory.AllRealPlayerItems)
-                    {
-                        if (item != null && string.Equals(
-                            item.StringTemplateId, FieldTerminalTemplateId,
-                            StringComparison.OrdinalIgnoreCase))
-                        {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            }
-
-            // Retain the stash fallback while the menu profile is still loading.
-            foreach (StashItem item in _stashItems)
-            {
-                if (item != null && string.Equals(
-                    item.TemplateId,
-                    FieldTerminalTemplateId,
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         private void UpdateTabletAccessState()
         {
             try
@@ -362,17 +325,14 @@ namespace TacticalSupplyDrops.Client
                 bool hasTerminal = false;
                 string nickname = null;
                 string deliveryMethod = null;
+                string raidTime = null;
 
                 try
                 {
-                    // Reuse the dispatch check so the display and delivery agree on raid state.
-                    inRaid = TryGetRaidPlayer(out ClientGameWorld currentWorld, out Player player);
-                    hasTerminal = inRaid
-                        ? HasFieldTerminal(player)
-                        : HasFieldTerminalOutsideRaid();
-                    if (Singleton<ClientApplication<IEftSession>>.Instantiated)
-                        nickname = Singleton<ClientApplication<IEftSession>>.Instance.GetClientBackEndSession()?.Profile?.Info?.Nickname;
-                    if (string.IsNullOrWhiteSpace(nickname) && inRaid) nickname = player?.Profile?.Info?.Nickname;
+                    var device=TabletRuntime.Context;
+                    inRaid=device.InRaid;hasTerminal=device.IsFresh&&device.HasTablet;
+                    nickname=device.Nickname;raidTime=device.RaidTime;
+                    TryGetRaidPlayer(out ClientGameWorld currentWorld,out Player player);
                     if (inRaid) deliveryMethod = groundDelivery != null && groundDelivery.CanServe(currentWorld) ? "courier" : "aircraft";
                 }
                 catch (Exception ex)
@@ -392,6 +352,7 @@ namespace TacticalSupplyDrops.Client
                         inRaid = inRaid,
                         nickname = nickname,
                         deliveryMethod = deliveryMethod,
+                        raidTime = raidTime,
                         updatedUtc = DateTime.UtcNow.ToString("o")
                     }));
 
@@ -1248,6 +1209,7 @@ namespace TacticalSupplyDrops.Client
             public bool inRaid;
             public string nickname;
             public string deliveryMethod;
+            public string raidTime;
             public string updatedUtc;
         }
 

@@ -3,4 +3,8 @@
   <Project Path="TacticalSupplyDrops.Overlay/TacticalSupplyDrops.Overlay.csproj" Id="284eb1a3-ec66-4b3a-97f9-21a3437d0584" />
   <Project Path="TacticalSupplyDrops.Server/TacticalSupplyDrops.Server.csproj" />
   <Project Path="TacticalSupplyDrops.Tests/TacticalSupplyDrops.Tests.csproj" />
+  <Project Path="TsdTechnologies.Api/TsdTechnologies.Api.csproj" />
+  <Project Path="TsdTechnologies.Client/TsdTechnologies.Client.csproj" />
+  <Project Path="TsdTechnologies.Overlay/TsdTechnologies.Overlay.csproj" />
+  <Project Path="TsdTechnologies.Server/TsdTechnologies.Server.csproj" />
 </Solution>
