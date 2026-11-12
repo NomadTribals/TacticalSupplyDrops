@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using TacticalSupplyDrops.Server.Services;
 using Xunit;
 
@@ -18,6 +18,7 @@ public class SupplyOrderPricingDetailsTests
                 ItemId = "item-001",
                 Name = "Test Item One",
                 BaseValue = 10000,
+                UnitWeight = .1,
                 Quantity = 1
             },
             new()
@@ -25,6 +26,7 @@ public class SupplyOrderPricingDetailsTests
                 ItemId = "item-002",
                 Name = "Test Item Two",
                 BaseValue = 5000,
+                UnitWeight = .05,
                 Quantity = 3
             }
         };
@@ -33,7 +35,7 @@ public class SupplyOrderPricingDetailsTests
             items,
             FenceReputationTier.Neutral);
 
-        Assert.Equal(16250, price);
+        Assert.Equal(5250, price);
     }
 
     [Fact]
@@ -45,12 +47,14 @@ public class SupplyOrderPricingDetailsTests
             {
                 ItemId = "item-001",
                 BaseValue = 10000,
+                UnitWeight = .1,
                 Quantity = 1
             },
             new()
             {
                 ItemId = "item-002",
                 BaseValue = 5000,
+                UnitWeight = .05,
                 Quantity = 3
             }
         };
@@ -59,7 +63,7 @@ public class SupplyOrderPricingDetailsTests
             items,
             FenceReputationTier.Excellent);
 
-        Assert.Equal(12188, price);
+        Assert.Equal(3938, price);
     }
 
     [Fact]
@@ -71,6 +75,6 @@ public class SupplyOrderPricingDetailsTests
             items,
             FenceReputationTier.Neutral);
 
-        Assert.Equal(15000, price);
+        Assert.Equal(5000, price);
     }
 }

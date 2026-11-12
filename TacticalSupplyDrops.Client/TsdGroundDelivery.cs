@@ -51,7 +51,7 @@ namespace TacticalSupplyDrops.Client
             logger = log;
             enabled = config.Bind("Ground Courier", "Enabled", true, "Use ground delivery on supported locations when no usable airdrop points are available.");
             delay = config.Bind("Ground Courier", "DelaySeconds", 15f,
-                new ConfigDescription("Courier handoff delay. Development default; adjust after testing.", new AcceptableValueRange<float>(5f, 180f)));
+                new ConfigDescription("Time before the courier arranges a ground handoff.", new AcceptableValueRange<float>(5f, 180f)));
             beaconSound = config.Bind("Ground Courier", "BeaconSound", true, "Play the courier crate's positional locator chirp.");
             beaconVolume = config.Bind("Ground Courier", "BeaconVolume", .12f,
                 new ConfigDescription("Courier locator chirp volume (0 = silent, 1 = full volume).", new AcceptableValueRange<float>(0f, 1f)));

@@ -19,6 +19,8 @@ namespace TacticalSupplyDrops.Server;
 
 public class SupplyDropStashItem
 {
+    public double UnitWeight { get; set; }
+    public bool IsLooseAmmo { get; set; }
     public string Id { get; set; } = string.Empty;
     public string TemplateId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
@@ -44,8 +46,18 @@ public class SupplyDropStaticRouterCallback(
     IStashItemDetailsProvider stashItemDetailsProvider,
     JsonUtil jsonUtil,
     ProcurementRepository procurementRepository,
-    TraderProcurementService traderProcurement)
+    TraderProcurementService traderProcurement,
+    CourierConversionService courierConversion)
 {
+    public async ValueTask<ItemEventRouterResponse> HandleCourierConversion(string url, PmcData profile,
+        SupplyDropCourierConversionRequest request, MongoId sessionId, ItemEventRouterResponse output, CancellationToken cancellationToken)
+    {
+        string? error = await courierConversion.Convert(profile, sessionId, output, request.OrderIds,
+            request.ExpectedAdditionalFee, fenceReputationService.GetReputationTier(profile), cancellationToken);
+        if (error != null) output.Warnings.Add(new Warning { ErrorMessage = error });
+        return output;
+    }
+
     public ValueTask<string> HandleTest(
         string url,
         MongoId sessionId)
@@ -175,7 +187,9 @@ public class SupplyDropStaticRouterCallback(
                 Height = details.Height,
                 IconUrl = details.IconUrl,
                 Tag = details.Tag,
-                Category = details.Category
+                Category = details.Category,
+                IsLooseAmmo = details.IsLooseAmmo,
+                UnitWeight = details.UnitWeight
             });
         }
 
@@ -189,6 +203,14 @@ public class SupplyDropStaticRouterCallback(
                 stashRootId = profile.Inventory?.Stash?.ToString(),
                 balanceRoubles = traderProcurement.GetBalance(profile),
                 wallet = traderProcurement.GetWallet(profile),
+                deliveryPricing = new {
+                    standardBaseFee = SupplyOrderPricingService.StandardBaseFee,
+                    standardRatePerKg = SupplyOrderPricingService.StandardRatePerKg,
+                    droneBaseFee = SupplyOrderPricingService.DroneBaseFee,
+                    droneRatePerKg = SupplyOrderPricingService.DroneRatePerKg,
+                    droneMaxWeightKg = DroneDeliveryPolicy.MaximumWeightKg,
+                    fenceMultiplier = new DeliveryPricingService().GetDeliveryFee(fenceReputationService.GetReputationTier(profile), 0, 10000) / 10000m
+                },
                 procurementCargo = (await procurementRepository.GetPurchasesAsync(profile.Id!.Value))
                     .Where(p => p.Status == "Staged")
                     .SelectMany(p => p.CargoSelections ?? new())
@@ -307,7 +329,7 @@ public class SupplyDropStaticRouterCallback(
             request.SelectedItemQuantities,
             reputationTier,
             cancellationToken,
-            request.RequestId);
+            request.RequestId, request.DeliveryMethod);
 
         if (!result.Success || result.Order == null)
         {
@@ -315,7 +337,7 @@ public class SupplyDropStaticRouterCallback(
 
             output.Warnings.Add(new Warning
             {
-                ErrorMessage = "The supply order could not be created."
+                ErrorMessage = result.Error ?? "The supply order could not be created."
             });
 
             return output;

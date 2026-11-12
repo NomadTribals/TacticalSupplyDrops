@@ -51,7 +51,7 @@ namespace TacticalSupplyDrops.Client
     [BepInPlugin(
     "com.nomadtribals.tacticalsupplydrops",
     "TSD Logistics",
-    "3.0.0")]
+    "3.1.0")]
     [BepInDependency(TabletRuntime.PluginGuid, "1.0.0")]
     public class TacticalSupplyDropsPlugin : BaseUnityPlugin
     {
@@ -132,6 +132,7 @@ namespace TacticalSupplyDrops.Client
 
             AirdropDevelopmentConfig.Initialize(Config);
             groundDelivery = new TsdGroundDelivery(Config, Logger);
+            TsdDroneDelivery.Initialize(Config);
 
             Logger.LogInfo(
                 "[TSD] Config file path: " + Config.ConfigFilePath);
@@ -352,6 +353,7 @@ namespace TacticalSupplyDrops.Client
                         inRaid = inRaid,
                         nickname = nickname,
                         deliveryMethod = deliveryMethod,
+                        droneUnavailable = inRaid && TryGetRaidPlayer(out ClientGameWorld routeWorld, out Player routePlayer) && TsdDroneDelivery.IsIndoorOnlyMap(routeWorld.LocationId),
                         raidTime = raidTime,
                         updatedUtc = DateTime.UtcNow.ToString("o")
                     }));
@@ -414,8 +416,11 @@ namespace TacticalSupplyDrops.Client
             DeliveryDispatchRequest request)
         {
             _deliveryDispatchInProgress = true;
+            bool manifestLocked = false;
             try
             {
+                while (!SupplyDropOrderBridge.CargoFileLock.Wait(0)) yield return null;
+                manifestLocked = true;
                 if (!TryGetRaidPlayer(out ClientGameWorld gameWorld, out Player player))
                 {
                     WriteDeliveryStatus(new DeliveryDispatchStatus
@@ -487,6 +492,57 @@ namespace TacticalSupplyDrops.Client
                         message = "THIS ORDER HAS ALREADY BEEN DISPATCHED",
                         completed = true
                     });
+                    yield break;
+                }
+
+                bool droneRoute = (string)Newtonsoft.Json.Linq.JObject.Parse(manifestSnapshot)["cargo"]?["deliveryMethod"] == "drone";
+                if (droneRoute && TsdDroneDelivery.IsIndoorOnlyMap(gameWorld.LocationId))
+                {
+                    if (!request.UseCourierFallback)
+                    {
+                        WriteDeliveryStatus(new DeliveryDispatchStatus { requestId=request.RequestId,orderId=request.OrderId,kind="error",completed=true,
+                            message="Drone delivery unavailable here. Confirm the courier balance on Delivery; your paid cargo remains reserved." });
+                        yield break;
+                    }
+                    WriteDeliveryStatus(new DeliveryDispatchStatus { requestId=request.RequestId,orderId=request.OrderId,kind="stage",sequence=1,
+                        message="APPLYING PREPAID DRONE FEE TO GROUND COURIER" });
+                    var conversion = SupplyDropOrderBridge.ConvertToCourierAsync(TsdPendingCargo.OrderIds(Newtonsoft.Json.Linq.JObject.Parse(manifestSnapshot)),request.ExpectedAdditionalFee);
+                    while(!conversion.IsCompleted) yield return null;
+                    if(conversion.IsFaulted || conversion.IsCanceled)
+                    {
+                        WriteDeliveryStatus(new DeliveryDispatchStatus { requestId=request.RequestId,orderId=request.OrderId,kind="error",completed=true,
+                            message=conversion.Exception?.GetBaseException().Message ?? "Courier conversion interrupted. Your paid cargo remains reserved." });
+                        yield break;
+                    }
+                    manifestSnapshot=File.ReadAllText(CargoFilePath);
+                    File.WriteAllText(OrderLookupResponsePath,"courier-conversion-complete");
+                    File.WriteAllText(StashRefreshRequestPath,"courier-payment");
+                    droneRoute=false;
+                }
+                if (droneRoute)
+                {
+                    int droneSequence = 1;
+                    bool flightComplete = false;
+                    Task<Vector3> flight = TsdDroneDelivery.Deliver(gameWorld, request.OrderId, manifestSnapshot, text =>
+                    {
+                        if (flightComplete) return;
+                        WriteDeliveryStatus(new DeliveryDispatchStatus { requestId = request.RequestId, orderId = request.OrderId,
+                            kind = "stage", sequence = droneSequence++, message = text });
+                    });
+                    while (!flight.IsCompleted) yield return null;
+                    flightComplete = true;
+                    if (flight.IsFaulted || flight.IsCanceled)
+                    {
+                        WriteDeliveryStatus(new DeliveryDispatchStatus { requestId = request.RequestId, orderId = request.OrderId,
+                            kind = "error", sequence = droneSequence++, completed = true,
+                            message = flight.Exception?.GetBaseException().Message ?? "Drone delivery interrupted. Order remains ready to retry." });
+                        yield break;
+                    }
+                    foreach (var id in TsdPendingCargo.OrderIds(Newtonsoft.Json.Linq.JObject.Parse(manifestSnapshot))) _dispatchedOrderIds.Add(id);
+                    SaveDispatchedOrders();
+                    WriteDeliveryStatus(new DeliveryDispatchStatus { requestId = request.RequestId, orderId = request.OrderId,
+                        kind = "success", sequence = droneSequence, completed = true, dropPoint = flight.Result.ToString(),
+                        message = "DRONE PARCEL DELIVERED — READY FOR COLLECTION" });
                     yield break;
                 }
 
@@ -601,7 +657,8 @@ namespace TacticalSupplyDrops.Client
                             yield break;
                         }
                         Vector3 groundPoint = placement.Result;
-                        _dispatchedOrderIds.Add(request.OrderId);
+                        foreach (var id in TsdPendingCargo.OrderIds(Newtonsoft.Json.Linq.JObject.Parse(manifestSnapshot)))
+                            _dispatchedOrderIds.Add(id);
                         SaveDispatchedOrders();
                         WriteDeliveryStatus(new DeliveryDispatchStatus
                         {
@@ -615,8 +672,10 @@ namespace TacticalSupplyDrops.Client
                 }
 
                 AirdropDustRecolor.BeginTsdDropPointCapture();
+                string shipmentId = ActiveOrderCargoId + ":" + request.OrderId;
+                TacticalSupplyDropsAirdropCargoPatch.SaveShipment(shipmentId, manifestSnapshot);
                 gameWorld.InitAirdrop(
-                    ActiveOrderCargoId,
+                    shipmentId,
                     true,
                     player.Position);
 
@@ -635,7 +694,8 @@ namespace TacticalSupplyDrops.Client
                     yield break;
                 }
 
-                _dispatchedOrderIds.Add(request.OrderId);
+                foreach (var id in TsdPendingCargo.OrderIds(Newtonsoft.Json.Linq.JObject.Parse(manifestSnapshot)))
+                            _dispatchedOrderIds.Add(id);
                 SaveDispatchedOrders();
 
                 Logger.LogInfo(
@@ -656,8 +716,16 @@ namespace TacticalSupplyDrops.Client
             }
             finally
             {
+                if (manifestLocked) SupplyDropOrderBridge.CargoFileLock.Release();
                 _deliveryDispatchInProgress = false;
+                _ = RefreshPendingCargoAfterDispatch();
             }
+        }
+
+        private async Task RefreshPendingCargoAfterDispatch()
+        {
+            try { await SupplyDropOrderBridge.RefreshPendingCargoAsync(); File.WriteAllText(OrderLookupResponsePath,"pending-cargo-refreshed"); }
+            catch (Exception ex) { Logger.LogWarning("Pending cargo remains saved but could not refresh: " + ex.Message); }
         }
 
         private void GroundDispatchFailed(DeliveryDispatchRequest request, ClientGameWorld world, int sequence, string reason)
@@ -1205,6 +1273,7 @@ namespace TacticalSupplyDrops.Client
         [Serializable]
         private class TabletAccessState
         {
+            public bool droneUnavailable;
             public bool hasAccess;
             public bool inRaid;
             public string nickname;
@@ -1216,6 +1285,8 @@ namespace TacticalSupplyDrops.Client
         [Serializable]
         private class DeliveryDispatchRequest
         {
+            public bool UseCourierFallback;
+            public int ExpectedAdditionalFee;
             public string RequestId;
             public string OrderId;
         }

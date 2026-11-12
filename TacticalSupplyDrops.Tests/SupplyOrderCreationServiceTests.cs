@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -80,23 +80,25 @@ public class SupplyOrderCreationServiceTests
         private readonly Dictionary<string, object> _data = new();
 
         public bool FailOnSave { get; set; }
+        public int ReadDelayMs { get; set; }
 
         private static string GetKey(MongoId profileId, string modKey)
         {
             return $"{profileId}_{modKey}";
         }
 
-        public Task<T?> GetAsync<T>(
+        public async Task<T?> GetAsync<T>(
             MongoId profileId,
             string modKey,
             CancellationToken cancellationToken = default)
         {
+            if (ReadDelayMs > 0) await Task.Delay(ReadDelayMs);
             if (_data.TryGetValue(GetKey(profileId, modKey), out var value))
             {
-                return Task.FromResult((T?)value);
+                return (T?)value;
             }
 
-            return Task.FromResult(default(T));
+            return default(T);
         }
 
         public Task SaveAsync<T>(
@@ -286,6 +288,102 @@ public class SupplyOrderCreationServiceTests
         };
     }
 
+    private static CourierConversionService CreateCourierService(FakeProfileDataStore store)
+    {
+        var stash = new StashInventoryService();
+        return new CourierConversionService(new SupplyOrderRepository(store), new StashItemDetailsService(new TestItemDetailsProvider()),
+            new SupplyOrderPricingService(), new SupplyOrderPaymentProcessor(new StashPaymentPlanService(stash),
+                new StashPaymentDeductionService(stash, new FakeItemRemover())), new FakeCloner(), new ProfileTransactionLockService());
+    }
+
+    [Theory]
+    [InlineData(100000, 3050, true, 2050)]
+    [InlineData(100000, 3049, false, 2050)]
+    [InlineData(2000, 3050, false, 2050)]
+    [InlineData(0, 0, true, 7000)]
+    public async Task CourierConversionCreditsPrepaymentAndRejectsUnconfirmedOrUnaffordableBalance(int balance, int expected, bool success, int prepaid)
+    {
+        var store = new FakeProfileDataStore();
+        var repository = new SupplyOrderRepository(store);
+        var service = CreateCourierService(store);
+        var stash = new MongoId("64b000000000000000000001");
+        var session = new MongoId("64b000000000000000000020");
+        var money = CreateMoney("64b000000000000000000010", stash.ToString(), balance);
+        var profile = CreateProfile(stash, money);
+        var item = CreateItem("64b000000000000000000002", stash.ToString());
+        var order = new SupplyOrder { DeliveryMethod = "drone", TotalPrice = prepaid,
+            Items = new() { new SupplyOrderItem(item.Id.ToString(), 1) { Items = new() { item } } } };
+        await repository.AddOrderAsync(profile.Id.Value, order);
+        var error = await service.Convert(profile, session, CreateOutput(session), new[] { order.OrderId }, expected,
+            FenceReputationTier.Neutral, CancellationToken.None);
+        Assert.Equal(success, error == null);
+        Assert.Equal(success ? balance - Math.Max(0, 5100 - prepaid) : balance, money.Upd.StackObjectsCount);
+        var saved = (await repository.GetOrdersAsync(profile.Id.Value)).Single();
+        Assert.Equal(success ? "standard" : "drone", saved.DeliveryMethod);
+        Assert.Equal(success ? Math.Max(5100, prepaid) : prepaid, saved.TotalPrice);
+        Assert.Same(order.Items, saved.Items);
+        if (success)
+        {
+            Assert.Null(await service.Convert(profile, session, CreateOutput(session), new[] { order.OrderId }, expected,
+                FenceReputationTier.Neutral, CancellationToken.None));
+            Assert.Equal(balance - Math.Max(0, 5100 - prepaid), money.Upd.StackObjectsCount);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentCourierConfirmationsChargeBalanceOnce()
+    {
+        var store = new FakeProfileDataStore { ReadDelayMs = 10 }; var repository = new SupplyOrderRepository(store);
+        var stash = new MongoId("64b000000000000000000001"); var session = new MongoId("64b000000000000000000020");
+        var money = CreateMoney("64b000000000000000000010", stash.ToString(), 100000);
+        var profile = CreateProfile(stash, money);
+        var item = CreateItem("64b000000000000000000002", stash.ToString());
+        var order = new SupplyOrder { DeliveryMethod = "drone", TotalPrice = 2050,
+            Items = new() { new SupplyOrderItem(item.Id.ToString(), 1) { Items = new() { item } } } };
+        await repository.AddOrderAsync(profile.Id.Value, order);
+        var service = CreateCourierService(store);
+        var results = await Task.WhenAll(service.Convert(profile, session, CreateOutput(session), new[] { order.OrderId },3050,FenceReputationTier.Neutral,CancellationToken.None),
+            service.Convert(profile, session, CreateOutput(session), new[] { order.OrderId },3050,FenceReputationTier.Neutral,CancellationToken.None));
+        Assert.All(results, error => Assert.Null(error));
+        Assert.Equal(96950, money.Upd.StackObjectsCount);
+        Assert.Equal("standard", (await repository.GetOrdersAsync(profile.Id.Value)).Single().DeliveryMethod);
+    }
+
+    [Fact]
+    public async Task FailedCourierSaveRestoresMoneyAndKeepsDroneOrder()
+    {
+        var store = new FakeProfileDataStore(); var repository = new SupplyOrderRepository(store);
+        var stash = new MongoId("64b000000000000000000001"); var session = new MongoId("64b000000000000000000020");
+        var profile = CreateProfile(stash, CreateMoney("64b000000000000000000010", stash.ToString(), 100000));
+        var item = CreateItem("64b000000000000000000002", stash.ToString());
+        var order = new SupplyOrder { DeliveryMethod = "drone", TotalPrice = 2050,
+            Items = new() { new SupplyOrderItem(item.Id.ToString(), 1) { Items = new() { item } } } };
+        await repository.AddOrderAsync(profile.Id.Value, order);
+        store.FailOnSave = true;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateCourierService(store).Convert(profile, session,
+            CreateOutput(session), new[] { order.OrderId }, 3050, FenceReputationTier.Neutral, CancellationToken.None));
+        Assert.Equal(100000, profile.Inventory.Items.Single().Upd.StackObjectsCount);
+        Assert.Equal("drone", (await repository.GetOrdersAsync(profile.Id.Value)).Single().DeliveryMethod);
+    }
+
+    [Fact]
+    public async Task UnsupportedDroneCargoDoesNotChargeOrReserveItems()
+    {
+        var service = CreateService(out _);
+        var stashId = new MongoId("64b000000000000000000001");
+        var sessionId = new MongoId("64b000000000000000000020");
+        var item = CreateItem("64b000000000000000000002", (string)stashId);
+        var money = CreateMoney("64b000000000000000000010", (string)stashId, 100000);
+        var profile = CreateProfile(stashId, item, money);
+        var result = await service.TryCreateOrderAsync(profile, sessionId, CreateOutput(sessionId),
+            new[] { item.Id.ToString() }, new Dictionary<string, int> { [item.Id.ToString()] = 1 },
+            FenceReputationTier.Neutral, deliveryMethod: "drone");
+        Assert.False(result.Success);
+        Assert.Contains("Standard Cargo", result.Error);
+        Assert.Equal(100000, money.Upd.StackObjectsCount);
+        Assert.Contains(item, profile.Inventory.Items);
+    }
+
     [Fact]
     public async Task TryCreateOrder_WithValidSelection_ShouldCreatePendingOrder()
     {
@@ -316,7 +414,7 @@ public class SupplyOrderCreationServiceTests
         Assert.NotNull(result.Order);
         Assert.False(result.IsDuplicate);
         Assert.Equal(SupplyOrderStatus.Pending, result.Order.Status);
-        Assert.Equal(15500, result.Order.TotalPrice);
+        Assert.Equal(5100, result.Order.TotalPrice);
         Assert.Single(result.Order.Items);
         Assert.Equal((string)item.Id, result.Order.Items[0].ItemId);
         Assert.Single(result.Order.Items[0].Items);
@@ -327,7 +425,7 @@ public class SupplyOrderCreationServiceTests
             profile.Inventory.Items,
             stashItem => stashItem.Id == item.Id);
 
-        Assert.Equal(84500, money.Upd.StackObjectsCount);
+        Assert.Equal(94900, money.Upd.StackObjectsCount);
     }
 
     [Fact]
@@ -364,7 +462,7 @@ public class SupplyOrderCreationServiceTests
         Assert.NotNull(firstResult.Order);
         Assert.False(firstResult.IsDuplicate);
 
-        Assert.Equal(84500, money.Upd.StackObjectsCount);
+        Assert.Equal(94900, money.Upd.StackObjectsCount);
 
         Assert.DoesNotContain(
             profile.Inventory.Items,
@@ -388,7 +486,7 @@ public class SupplyOrderCreationServiceTests
         Assert.Equal(firstResult.Order.TotalPrice, secondResult.Order.TotalPrice);
         Assert.Equal(firstResult.TotalFootprint, secondResult.TotalFootprint);
 
-        Assert.Equal(84500, money.Upd.StackObjectsCount);
+        Assert.Equal(94900, money.Upd.StackObjectsCount);
 
         Assert.DoesNotContain(
             profile.Inventory.Items,
@@ -563,9 +661,9 @@ public class SupplyOrderCreationServiceTests
             profile.Inventory.Items,
             item => item.Id == container.Id || item.Id == child.Id);
 
-        Assert.Equal(16000, result.Order.TotalPrice);
+        Assert.Equal(5200, result.Order.TotalPrice);
         Assert.Equal(2, result.TotalFootprint);
-        Assert.Equal(84000, money.Upd.StackObjectsCount);
+        Assert.Equal(94800, money.Upd.StackObjectsCount);
     }
 
     [Fact]
@@ -913,6 +1011,7 @@ public class SupplyOrderCreationServiceTests
 
     private class TestItemDetailsProvider : IItemDetailsProvider
     {
+        public double GetUnitWeight(Item item) => .1;
         public (string Name, int BaseValue, int Width, int Height, string IconUrl, string Category)
            GetDetails(Item item)
         {

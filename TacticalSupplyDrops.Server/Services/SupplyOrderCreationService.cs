@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,7 +18,7 @@ public record SupplyOrderCreationResult(
     bool Success,
     SupplyOrder? Order,
     int TotalFootprint,
-    bool IsDuplicate = false);
+    bool IsDuplicate = false, string? Error = null);
 
 [Injectable]
 public class SupplyOrderCreationService(
@@ -67,7 +67,8 @@ public class SupplyOrderCreationService(
         Dictionary<string, int> requestedQuantities,
         FenceReputationTier reputationTier,
         CancellationToken cancellationToken = default,
-        string? requestId = null)
+        string? requestId = null,
+        string deliveryMethod = "standard")
     {
         if (profile?.Id == null ||
             selectedItemIds == null ||
@@ -213,13 +214,21 @@ public class SupplyOrderCreationService(
 
             }
 
+            if (deliveryMethod != "standard" && deliveryMethod != "drone")
+                return new SupplyOrderCreationResult(false, null, totalFootprint, Error: "Unknown delivery method.");
+            if (deliveryMethod == "drone")
+            {
+                string? reason = DroneDeliveryPolicy.Validate(itemDetails, totalFootprint);
+                if (reason != null) return new SupplyOrderCreationResult(false, null, totalFootprint, Error: reason);
+            }
+
             int totalPrice;
 
             try
             {
                 totalPrice = pricingService.CalculateSupplyOrderPrice(
                     itemDetails,
-                    reputationTier);
+                    reputationTier, deliveryMethod);
             }
             catch (Exception exception)
             {
@@ -325,6 +334,7 @@ public class SupplyOrderCreationService(
                 throw;
             }
 
+            preparedOrder.DeliveryMethod = deliveryMethod;
             preparedOrder.RequestId = requestId;
             preparedOrder.TotalFootprint = totalFootprint;
 

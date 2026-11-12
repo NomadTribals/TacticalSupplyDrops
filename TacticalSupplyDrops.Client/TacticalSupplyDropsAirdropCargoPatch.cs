@@ -29,31 +29,35 @@ namespace TacticalSupplyDrops.Client
             BepInEx.Logging.Logger.CreateLogSource(
                 "TacticalSupplyDrops.AirdropCargo");
 
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> Shipments =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+
+        private static GameWorld ShipmentWorld;
+        internal static void SaveShipment(string id, string manifest)
+        {
+            var world = Singleton<GameWorld>.Instance;
+            if (!ReferenceEquals(ShipmentWorld, world)) { Shipments.Clear(); ShipmentWorld = world; }
+            Shipments[id] = manifest;
+        }
+
         [HarmonyPrefix]
         public static bool LoadLootContainerDataPrefix(
             string containerId,
             ref Task<Result<AirdropContainerData>> __result)
         {
             // Let every ordinary airdrop use the original game method.
-            if (!string.Equals(
-                containerId,
-                TsdAirdropLootId,
-                StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
+            bool legacy = string.Equals(containerId, TsdAirdropLootId, StringComparison.OrdinalIgnoreCase);
+            if (!legacy && !(containerId?.StartsWith(TsdAirdropLootId + ":", StringComparison.OrdinalIgnoreCase) ?? false)) return true;
 
             try
             {
-                if (!File.Exists(CargoFilePath))
+                string fileContents;
+                if (!legacy)
                 {
-                    throw new FileNotFoundException(
-                        "The TSD cargo file does not exist.",
-                        CargoFilePath);
+                    if (!Shipments.TryGetValue(containerId, out fileContents))
+                        throw new InvalidOperationException("The in-flight cargo snapshot is unavailable.");
                 }
-
-                string fileContents =
-                    File.ReadAllText(CargoFilePath);
+                else fileContents = File.ReadAllText(CargoFilePath);
 
                 if (string.IsNullOrWhiteSpace(fileContents))
                 {

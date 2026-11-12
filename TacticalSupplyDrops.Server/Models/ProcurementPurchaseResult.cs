@@ -1,4 +1,4 @@
-﻿
+
 namespace TacticalSupplyDrops.Server.Models;
 
 public class ProcurementPurchaseResult

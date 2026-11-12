@@ -1,6 +1,7 @@
-﻿
+
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -25,7 +26,7 @@ namespace TacticalSupplyDrops.Client
         private static readonly string CargoFilePath =
             Path.Combine(BepInEx.Paths.ConfigPath, "TacticalSupplyDrops", "cargo.json");
 
-        private static readonly SemaphoreSlim CargoFileLock =
+        internal static readonly SemaphoreSlim CargoFileLock =
             new SemaphoreSlim(1, 1);
 
         public static async Task<string> SubmitOrderAsync(
@@ -42,6 +43,30 @@ namespace TacticalSupplyDrops.Client
                 OrderEndpoint,
                 requestJson);
         }
+        internal static async Task ConvertToCourierAsync(string[] ids, int additionalFee)
+        {
+            string response = await SubmitOrderAsync(JsonConvert.SerializeObject(new { data = new[] { new {
+                Action = "TacticalSupplyDropsConvertToCourier", OrderIds = ids, ExpectedAdditionalFee = additionalFee
+            } } }));
+            var reply = JObject.Parse(response);
+            var data = reply["data"] ?? reply;
+            var warnings = data["warnings"] as JArray;
+            if ((reply["err"]?.Value<int>() ?? 0) != 0 || warnings?.Count > 0)
+            {
+                string reason = (string)warnings?[0]?["errmsg"] ?? (string)warnings?[0]?["errorMessage"] ?? (string)warnings?[0]?["ErrorMessage"] ?? (string)reply["errmsg"];
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(reason) ? "Courier conversion was not accepted. Your cargo remains reserved." : reason);
+            }
+            ProcurementProfileRefresh.QueueResponse(response);
+            string cargoResponse = await RequestHandler.PostJsonAsync(CargoEndpoint, JsonConvert.SerializeObject(new { OrderId = ids[ids.Length-1], OrderIds = ids }));
+            var cargo = JObject.Parse(cargoResponse);
+            var included = cargo["orderIds"]?.Values<string>().ToArray();
+            if (!(cargo["container"] is JArray items) || items.Count == 0 || included == null || !included.SequenceEqual(ids))
+                throw new InvalidOperationException("Courier conversion was saved, but the new manifest could not refresh. Refresh the tablet before retrying; the payment will not repeat.");
+            string folder = Path.Combine(BepInEx.Paths.ConfigPath,"TacticalSupplyDrops");
+            TsdPendingCargo.WriteAtomic(Path.Combine(folder,"cargo.json"),new JObject {
+                ["orderId"] = ids[ids.Length-1], ["orderIds"] = new JArray(ids), ["cargo"] = cargo });
+        }
+
         public static async Task<string> PurchaseCartridgesAsync(
       string requestJson)
         {
@@ -104,98 +129,29 @@ namespace TacticalSupplyDrops.Client
                     "The accepted order did not contain an OrderId.");
             }
 
-            // Step 2: Request the actual cargo using the OrderId.
-            string cargoRequest =
-                JsonConvert.SerializeObject(new
-                {
-                    OrderId = orderId
-                });
-
-            string cargoResponse =
-                await RequestHandler.PostJsonAsync(
-                    CargoEndpoint,
-                    cargoRequest);
-
-            // Step 3: Verify the server returned valid crate data.
-            JObject cargoData =
-                JObject.Parse(cargoResponse);
-
-            JToken container =
-                cargoData["container"];
-
-            if (container == null ||
-                container.Type != JTokenType.Array ||
-                !container.HasValues)
-            {
-                throw new InvalidOperationException(
-                    "The cargo response did not contain a valid container.");
-            }
-
-            string icon =
-                cargoData["icon"]?.Value<string>();
-
-            if (string.IsNullOrWhiteSpace(icon))
-            {
-                throw new InvalidOperationException(
-                    "The cargo response did not contain an airdrop icon.");
-            }
-
-            // Step 4: Wrap the cargo with its associated OrderId.
-            JObject cargoFileData = new JObject
-            {
-                ["orderId"] = orderId,
-                ["cargo"] = cargoData
-            };
-
-            string directory =
-                Path.GetDirectoryName(CargoFilePath);
-
-            if (string.IsNullOrWhiteSpace(directory))
-            {
-                throw new InvalidOperationException(
-                    "The cargo storage directory is invalid.");
-            }
-
-            Directory.CreateDirectory(directory);
-
-            string temporaryPath = CargoFilePath + ".tmp";
-
             await CargoFileLock.WaitAsync();
-
             try
             {
-                File.WriteAllText(
-                    temporaryPath,
-                    cargoFileData.ToString(Formatting.None));
-
-                // Replace the existing file atomically where possible.
-                if (File.Exists(CargoFilePath))
-                {
-                    File.Replace(
-                        temporaryPath,
-                        CargoFilePath,
-                        null);
-                }
-                else
-                {
-                    File.Move(
-                        temporaryPath,
-                        CargoFilePath);
-                }
+                var shipment = await TsdPendingCargo.Refresh(Path.GetDirectoryName(CargoFilePath), orderId,
+                    json => RequestHandler.PostJsonAsync(CargoEndpoint, json));
+                if (shipment != null) lookupData["order"] = shipment;
             }
-            finally
-            {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
-
-                CargoFileLock.Release();
-            }
+            finally { CargoFileLock.Release(); }
 
             // Return the original lookup response so the existing
             // plugin response-saving behavior remains unchanged.
-            return lookupResponse;
+            return lookupData.ToString(Formatting.None);
+        }
+
+        internal static async Task RefreshPendingCargoAsync()
+        {
+            await CargoFileLock.WaitAsync();
+            try
+            {
+                await TsdPendingCargo.Refresh(Path.GetDirectoryName(CargoFilePath), null,
+                    json => RequestHandler.PostJsonAsync(CargoEndpoint, json));
+            }
+            finally { CargoFileLock.Release(); }
         }
 
         public static async Task<string> GetCargoAsync(

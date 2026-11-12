@@ -1,4 +1,4 @@
-﻿using SPTarkov.DI.Annotations;
+using SPTarkov.DI.Annotations;
 
 namespace TacticalSupplyDrops.Server.Services;
 

@@ -1,4 +1,4 @@
-﻿
+
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.Helpers.Items;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
@@ -67,6 +67,10 @@ public class SptItemDetailsProvider(
             !string.IsNullOrWhiteSpace(slot.Name) &&
             slot.Name == item.SlotId);
     }
+
+    public double GetUnitWeight(Item item) => Math.Max(0, itemHelper.GetItem(item.Template).Value?.Properties?.Weight ?? 0);
+
+    public bool IsLooseAmmo(Item item) => itemHelper.IsOfBaseclass(item.Template, BaseClasses.AMMO) && !itemHelper.IsOfBaseclass(item.Template, BaseClasses.AMMO_BOX);
 
     private string GetCategory(Item item)
     {

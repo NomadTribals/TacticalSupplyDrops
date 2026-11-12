@@ -1,4 +1,4 @@
-﻿
+
 using SPTarkov.Server.Core.Extensions;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common;
@@ -261,7 +261,7 @@ public class SupplyOrderConcurrencyTests
         Assert.Single(results.Where(result => !result.IsDuplicate));
         Assert.Single(results.Where(result => result.IsDuplicate));
 
-        Assert.Equal(84500, money.Upd!.StackObjectsCount);
+        Assert.Equal(94900, money.Upd!.StackObjectsCount);
 
         Assert.DoesNotContain(
             profile.Inventory.Items,
@@ -285,6 +285,7 @@ public class SupplyOrderConcurrencyTests
 
     private class TestItemDetailsProvider : IItemDetailsProvider
     {
+        public double GetUnitWeight(Item item) => .1;
         public (string Name, int BaseValue, int Width, int Height, string IconUrl, string Category)
             GetDetails(Item item)
             => ("Test Item", 10000, 1, 1, string.Empty, "OTHER");

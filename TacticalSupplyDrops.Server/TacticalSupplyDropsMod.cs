@@ -31,7 +31,7 @@ public record ModMetadata : IModMetadata
     public List<string>? Contributors { get; init; }
 
     public SemanticVersioning.Version Version { get; init; } =
-        new("3.0.0");
+        new("3.1.0");
 
     public SemanticVersioning.Range SptVersion { get; init; } =
         new("4.1.6");
@@ -86,6 +86,8 @@ private const string TsdAirdropLootId =
         logger.Success(
             "Tactical Supply Drops has loaded successfully!");
 
+        RegisterDroneParcel();
+
         // Keep legacy flare templates for existing profiles. The tablet is registered by TSD Technologies.
         if (RegisterOrangeFlare())
         {
@@ -95,6 +97,26 @@ private const string TsdAirdropLootId =
 
 
         return Task.CompletedTask;
+    }
+
+    private void RegisterDroneParcel()
+    {
+        var id = new MongoId(Services.DroneDeliveryPolicy.ParcelTemplateId);
+        if (templateTable.Items.ContainsKey(id)) return;
+        var source = templateTable.Items[new MongoId("6223349b3136504a544d1608")];
+        var result = customItemService.CreateItemFromClone(new NewItemFromCloneDetails
+        {
+            ItemTplToClone = source.Id, NewId = id, ParentId = source.Parent,
+            NewItemName = "tsd_light_supply_parcel", AddToHandbook = false, AddToFleaPriceDb = false,
+            AddToWeaponShelf = false,
+            Locales = new Dictionary<string, LocaleDetails> { ["en"] = new LocaleDetails
+            { Name = "TSD Supply Parcel", ShortName = "TSD Parcel", Description = "Compact TSD drone shipment." } }
+        }, typeof(TacticalSupplyDropsMod).Assembly);
+        if (!result.Success) throw new InvalidOperationException("TSD parcel registration failed.");
+        var grids = templateTable.Items[id].Properties.Grids?.ToList();
+        if (grids == null || grids.Count == 0) throw new InvalidOperationException("TSD parcel grid unavailable.");
+        grids[0].Properties.CellsH = 4;
+        grids[0].Properties.CellsV = 3;
     }
 
     private bool RegisterOrangeFlare()
@@ -276,7 +298,7 @@ private const string TsdAirdropLootId =
                 return;
             }
 
-            // Add our custom flare without removing vanilla ammo.
+            // Add the custom flare without removing vanilla ammo.
             bool added = filter.Filter.Add(flareId);
 
             if (added)

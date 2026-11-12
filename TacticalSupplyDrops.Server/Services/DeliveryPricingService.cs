@@ -1,4 +1,4 @@
-﻿
+
 namespace TacticalSupplyDrops.Server.Services;
 
 public enum FenceReputationTier
@@ -11,7 +11,7 @@ public enum FenceReputationTier
 
 public class DeliveryPricingService
 {
-    private const decimal BaseDeliveryFee = 15000m;
+    private const decimal BaseDeliveryFee = 5000m;
 
     private const decimal PoorReputationMultiplier = 1.50m;
     private const decimal NeutralReputationMultiplier = 1.00m;
@@ -20,7 +20,7 @@ public class DeliveryPricingService
 
     public int GetDeliveryFee(
         FenceReputationTier reputationTier,
-        decimal additionalItemFees = 0m)
+        decimal additionalItemFees = 0m, decimal baseFee = BaseDeliveryFee)
     {
         if (additionalItemFees < 0)
         {
@@ -36,7 +36,7 @@ public class DeliveryPricingService
             _ => NeutralReputationMultiplier
         };
 
-        decimal totalFee = (BaseDeliveryFee + additionalItemFees) * multiplier;
+        decimal totalFee = (baseFee + additionalItemFees) * multiplier;
 
         return checked((int)Math.Ceiling(totalFee));
     }

@@ -1,4 +1,4 @@
-﻿
+
 using System.Collections.Generic;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 

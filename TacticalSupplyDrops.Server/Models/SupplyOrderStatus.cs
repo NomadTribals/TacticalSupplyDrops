@@ -1,4 +1,4 @@
-﻿namespace TacticalSupplyDrops.Server.Models;
+namespace TacticalSupplyDrops.Server.Models;
 
 public enum SupplyOrderStatus
 {

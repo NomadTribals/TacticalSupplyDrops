@@ -36,7 +36,7 @@ namespace TacticalSupplyDrops.Overlay
         public string Category;
     }
 
-    [BepInPlugin("com.nomadtribals.tacticalsupplydrops.overlay","TSD Logistics - Tablet App","3.0.0")]
+    [BepInPlugin("com.nomadtribals.tacticalsupplydrops.overlay","TSD Logistics - Tablet App","3.1.0")]
     [BepInDependency("com.nomadtribals.tacticalsupplydrops")]
     [BepInDependency("com.nomadtribals.tsdtechnologies.overlay", "1.0.0")]
     public class TacticalSupplyDropsOverlayPlugin:BaseUnityPlugin
@@ -96,7 +96,7 @@ namespace TacticalSupplyDrops.Overlay
             unifiedConfig=Chainloader.PluginInfos["com.nomadtribals.tacticalsupplydrops"].Instance.Config;
             var migration=new TsdUnifiedConfig(unifiedConfig,Config.ConfigFilePath);
             lastTrader=migration.Bind("Procurement","LastTrader","","Last selected trader.");procurementSearchText=migration.Bind("Procurement","Search","","Last Procurement search.");
-            TabletRuntime.Register(new TabletApplication{Id="tsd.logistics",Name="TSD Logistics",IconSvg=Resource("LogisticsIcon.svg"),Document=Resource("LogisticsApp.html"),Channels=new[]{"stash","tsd-preferences","tsd-courier"},LogPage="log",Attach=Attach});
+            TabletRuntime.Register(new TabletApplication{Id="tsd.logistics",Name="TSD Logistics",IconSvg=Resource("LogisticsIcon.svg"),Document=Resource("LogisticsApp.html"),Channels=new[]{"stash","tsd-preferences","tsd-courier","tsd-drone"},LogPage="log",Attach=Attach});
             Logger.LogInfo("TSD Logistics app registered with Field OS.");
         }
         private static string Resource(string name){using(var stream=typeof(TacticalSupplyDropsOverlayPlugin).Assembly.GetManifestResourceStream("TacticalSupplyDrops.Overlay."+name))using(var reader=new StreamReader(stream))return reader.ReadToEnd();}
@@ -124,6 +124,7 @@ namespace TacticalSupplyDrops.Overlay
         [Serializable]
         private class GroundCargoLocatorState
         {
+            public string method;
             public bool available;
             public bool testOnly;
             public string phase;
@@ -147,6 +148,14 @@ namespace TacticalSupplyDrops.Overlay
                 if (state == null || (!state.available && state.phase != "pending" && state.phase != "unavailable") || state.updatedAtUnixMs <= 0 ||
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - state.updatedAtUnixMs > 3000)
                     state = new GroundCargoLocatorState();
+                string dronePath = Path.Combine(OrderFolderPath, "drone-cargo-locator.json");
+                if (File.Exists(dronePath))
+                {
+                    var drone = JsonUtility.FromJson<GroundCargoLocatorState>(File.ReadAllText(dronePath));
+                    if (drone != null && (drone.available || drone.phase == "pending") &&
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - drone.updatedAtUnixMs <= 3000 &&
+                        drone.updatedAtUnixMs >= state.updatedAtUnixMs) state = drone;
+                }
                 string json = JsonUtility.ToJson(state);
                 if (json == lastGroundCargoLocatorJson) return;
                 overlay.Post("tsd-courier", json, TabletPostOptions.LatestOnly);
@@ -189,6 +198,7 @@ namespace TacticalSupplyDrops.Overlay
                     var state = JsonUtility.FromJson<TabletAccessState>(File.ReadAllText(TabletAccessPath));
                     message.nickname = state?.nickname;
                     message.deliveryMethod = state?.deliveryMethod;
+                    message.droneUnavailable = state?.droneUnavailable ?? false;
                     message.raidTime = state?.raidTime;
                 }
                 catch { message.nickname = null; }
@@ -218,7 +228,11 @@ namespace TacticalSupplyDrops.Overlay
                     {
                         message.available = true;
                         message.orderId = envelope.orderId;
-                        message.itemCount = envelope.cargo.container.Length;
+                        message.itemCount = envelope.cargo.container.Length - 1;
+                        message.deliveryMethod = envelope.cargo.deliveryMethod ?? "standard";
+                        message.paidFee = envelope.cargo.order?.TotalPrice ?? 0;
+                        message.courierTotalFee = envelope.cargo.courierTotalFee;
+                        message.courierAdditionalFee = envelope.cargo.courierAdditionalFee;
 
                         if (File.Exists(DeliveryDispatchStatusPath))
                         {
@@ -589,6 +603,7 @@ namespace TacticalSupplyDrops.Overlay
         [Serializable]
         private class TabletAccessState
         {
+            public bool droneUnavailable;
             public bool hasAccess;
             public bool inRaid;
             public string nickname;
@@ -600,6 +615,7 @@ namespace TacticalSupplyDrops.Overlay
         [Serializable]
         private class TabletAccessMessage
         {
+            public bool droneUnavailable;
             public bool hasAccess;
             public bool inRaid;
             public string nickname;
@@ -610,6 +626,10 @@ namespace TacticalSupplyDrops.Overlay
         [Serializable]
         private class ActiveCargoMessage
         {
+            public int courierTotalFee;
+            public int courierAdditionalFee;
+            public int paidFee;
+            public string deliveryMethod;
             public bool available;
             public string orderId;
             public int itemCount;
@@ -628,8 +648,15 @@ namespace TacticalSupplyDrops.Overlay
         [Serializable]
         private class CargoPayload
         {
+            public int courierTotalFee;
+            public int courierAdditionalFee;
+            public CargoOrder order;
+            public string deliveryMethod;
             public CargoItem[] container;
         }
+
+        [Serializable]
+        private class CargoOrder { public int TotalPrice; }
 
         [Serializable]
         private class CargoItem

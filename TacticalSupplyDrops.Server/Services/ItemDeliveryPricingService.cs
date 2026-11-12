@@ -1,27 +1,12 @@
-﻿
-using System;
-
 namespace TacticalSupplyDrops.Server.Services;
 
 public class ItemDeliveryPricingService
 {
-    private const decimal ItemValuePercentage = 0.05m;
-
-    public int CalculateItemDeliveryFee(int itemBaseValue, int quantity)
+    public int CalculateItemDeliveryFee(decimal unitWeight, int quantity, decimal ratePerKg = 1000m)
     {
-        if (itemBaseValue < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(itemBaseValue));
-        }
-
-        if (quantity < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(quantity));
-        }
-
-        decimal totalItemValue = (decimal)itemBaseValue * quantity;
-        decimal deliveryFee = totalItemValue * ItemValuePercentage;
-
-        return (int)Math.Ceiling(deliveryFee);
+        if (unitWeight < 0) throw new ArgumentOutOfRangeException(nameof(unitWeight));
+        if (quantity < 1) throw new ArgumentOutOfRangeException(nameof(quantity));
+        if (ratePerKg < 0) throw new ArgumentOutOfRangeException(nameof(ratePerKg));
+        return checked((int)Math.Ceiling(unitWeight * quantity * ratePerKg));
     }
 }

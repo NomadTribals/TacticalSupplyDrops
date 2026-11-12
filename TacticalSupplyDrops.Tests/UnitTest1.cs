@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.Collections.Generic;
 using TacticalSupplyDrops.Server.Models;
@@ -12,47 +12,47 @@ public class DeliveryPricingTests
     private readonly DeliveryPricingService _pricingService = new();
 
     [Fact]
-    public void PoorReputation_ShouldCost22500()
+    public void PoorReputation_ShouldCost7500()
     {
         int fee = _pricingService.GetDeliveryFee(FenceReputationTier.Poor);
-        Assert.Equal(22500, fee);
+        Assert.Equal(7500, fee);
     }
 
     [Fact]
-    public void NeutralReputation_ShouldCost15000()
+    public void NeutralReputation_ShouldCost5000()
     {
         int fee = _pricingService.GetDeliveryFee(FenceReputationTier.Neutral);
-        Assert.Equal(15000, fee);
+        Assert.Equal(5000, fee);
     }
 
     [Fact]
-    public void GoodReputation_ShouldCost13500()
+    public void GoodReputation_ShouldCost4500()
     {
         int fee = _pricingService.GetDeliveryFee(FenceReputationTier.Good);
-        Assert.Equal(13500, fee);
+        Assert.Equal(4500, fee);
     }
 
     [Fact]
-    public void ExcellentReputation_ShouldCost11250()
+    public void ExcellentReputation_ShouldCost3750()
     {
         int fee = _pricingService.GetDeliveryFee(FenceReputationTier.Excellent);
-        Assert.Equal(11250, fee);
+        Assert.Equal(3750, fee);
     }
 
     [Fact]
-    public void ItemWorth10000_ShouldHaveDeliveryFeeOf500()
+    public void ItemWeighing100Grams_ShouldHaveDeliveryFeeOf100()
     {
         var service = new ItemDeliveryPricingService();
-        int fee = service.CalculateItemDeliveryFee(10000, 1);
-        Assert.Equal(500, fee);
+        int fee = service.CalculateItemDeliveryFee(.1m, 1);
+        Assert.Equal(100, fee);
     }
 
     [Fact]
-    public void ThreeItemsWorth10000_ShouldHaveDeliveryFeeOf1500()
+    public void ThreeItemsWeighing100Grams_ShouldHaveDeliveryFeeOf300()
     {
         var service = new ItemDeliveryPricingService();
-        int fee = service.CalculateItemDeliveryFee(10000, 3);
-        Assert.Equal(1500, fee);
+        int fee = service.CalculateItemDeliveryFee(.1m, 3);
+        Assert.Equal(300, fee);
     }
 
     [Fact]
@@ -70,45 +70,45 @@ public class DeliveryPricingTests
     {
         var service = new ItemDeliveryPricingService();
 
-        Action action = () => service.CalculateItemDeliveryFee(10000, 0);
+        Action action = () => service.CalculateItemDeliveryFee(.1m, 0);
 
         Assert.Throws<ArgumentOutOfRangeException>(action);
     }
 
     [Fact]
-    public void SupplyOrderWithExcellentReputation_ShouldCost12188()
+    public void SupplyOrderWithExcellentReputation_ShouldCost3938()
     {
         var service = new SupplyOrderPricingService();
 
-        var items = new List<(int ItemBaseValue, int Quantity)>
+        var items = new List<(decimal UnitWeight, int Quantity)>
         {
-            (10000, 1),
-            (5000, 3)
+            (.1m, 1),
+            (.05m, 3)
         };
 
         int price = service.CalculateSupplyOrderPrice(
             items,
             FenceReputationTier.Excellent);
 
-        Assert.Equal(12188, price);
+        Assert.Equal(3938, price);
     }
 
     [Fact]
-    public void SupplyOrderWithNeutralReputation_ShouldCost16250()
+    public void SupplyOrderWithNeutralReputation_ShouldCost5250()
     {
         var service = new SupplyOrderPricingService();
 
-        var items = new List<(int ItemBaseValue, int Quantity)>
+        var items = new List<(decimal UnitWeight, int Quantity)>
         {
-            (10000, 1),
-            (5000, 3)
+            (.1m, 1),
+            (.05m, 3)
         };
 
         int price = service.CalculateSupplyOrderPrice(
             items,
             FenceReputationTier.Neutral);
 
-        Assert.Equal(16250, price);
+        Assert.Equal(5250, price);
     }
 }
 

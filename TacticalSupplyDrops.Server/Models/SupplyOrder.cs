@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.Collections.Generic;
 
@@ -6,6 +6,7 @@ namespace TacticalSupplyDrops.Server.Models;
 
 public class SupplyOrder
 {
+    public string DeliveryMethod { get; set; } = "standard";
     public string OrderId { get; set; } = Guid.NewGuid().ToString();
 
     public string RequestId { get; set; } = string.Empty;

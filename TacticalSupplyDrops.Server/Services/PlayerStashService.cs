@@ -1,4 +1,4 @@
-﻿using SPTarkov.DI.Annotations;
+using SPTarkov.DI.Annotations;
 using System.Collections.Generic;
 using SPTarkov.Server.Core.Models.Eft.Common;
 using TacticalSupplyDrops.Server.Services;

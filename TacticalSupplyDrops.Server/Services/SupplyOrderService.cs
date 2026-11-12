@@ -1,4 +1,4 @@
-﻿using SPTarkov.DI.Annotations;
+using SPTarkov.DI.Annotations;
 using System;
 using System.Collections.Generic;
 using System.Linq;

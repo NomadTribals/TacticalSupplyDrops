@@ -13,6 +13,7 @@ namespace TacticalSupplyDrops.Client
     internal static class TsdDynamicMaps
     {
         private static readonly HashSet<AirdropSynchronizableObject> Active = new HashSet<AirdropSynchronizableObject>();
+        private static readonly Dictionary<AirdropSynchronizableObject,string> Labels = new Dictionary<AirdropSynchronizableObject,string>();
         private static readonly List<WeakReference> Providers = new List<WeakReference>();
         private static bool checkedCompatibility;
         private static bool ready;
@@ -48,9 +49,10 @@ namespace TacticalSupplyDrops.Client
             return ready;
         }
 
-        internal static void Register(AirdropSynchronizableObject crate, ManualLogSource log)
+        internal static void Register(AirdropSynchronizableObject crate, ManualLogSource log, string label = "TSD Courier Cargo")
         {
             if (crate == null || !Initialize(log) || !Active.Add(crate)) return;
+            Labels[crate] = string.IsNullOrWhiteSpace(label) ? "TSD Courier Cargo" : label;
             try
             {
                 var drops = (IList)dropsField.GetValue(null);
@@ -61,7 +63,7 @@ namespace TacticalSupplyDrops.Client
                     foreach (var handler in handlers.GetInvocationList())
                         try { handler.DynamicInvoke(crate); }
                         catch (Exception ex) { logger.LogDebug("Courier map refresh deferred: " + ex.Message); }
-                logger.LogInfo("[TSD] Courier crate registered with Dynamic Maps airdrop markers.");
+                logger.LogInfo("[TSD] " + Labels[crate] + " registered with Dynamic Maps airdrop markers.");
             }
             catch (Exception ex) { Remove(crate); logger.LogWarning("[TSD] Courier marker unavailable: " + ex.Message); }
         }
@@ -75,9 +77,10 @@ namespace TacticalSupplyDrops.Client
                 var markers = markersField.GetValue(__instance) as IDictionary;
                 var marker = markers != null && markers.Contains(__0) ? markers[__0] : null;
                 if (marker == null) return; // Honor Dynamic Maps visibility/intelligence settings.
-                marker.GetType().GetProperty("Text", Instance)?.SetValue(marker, "TSD Courier Cargo");
+                string text = Labels.TryGetValue(__0, out var caption) ? caption : "TSD Courier Cargo";
+                marker.GetType().GetProperty("Text", Instance)?.SetValue(marker, text);
                 var label = marker.GetType().GetProperty("Label", Instance)?.GetValue(marker);
-                label?.GetType().GetProperty("text", Instance)?.SetValue(label, "TSD Courier Cargo");
+                label?.GetType().GetProperty("text", Instance)?.SetValue(label, text);
             }
             catch (Exception ex) { logger?.LogDebug("Courier map label deferred: " + ex.Message); }
         }
@@ -85,6 +88,7 @@ namespace TacticalSupplyDrops.Client
         internal static void Remove(AirdropSynchronizableObject crate)
         {
             if (!ready || ReferenceEquals(crate, null) || !Active.Remove(crate)) return;
+            Labels.Remove(crate);
             try { (dropsField.GetValue(null) as IList)?.Remove(crate); }
             catch (Exception ex) { logger?.LogDebug("Courier map list cleanup: " + ex.Message); }
             foreach (var reference in Providers.ToArray())

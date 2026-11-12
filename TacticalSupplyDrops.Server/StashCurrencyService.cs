@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.Extensions;
 using SPTarkov.Server.Core.Models.Eft.Common;

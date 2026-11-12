@@ -1,4 +1,4 @@
-﻿
+
 using System;
 
 namespace TacticalSupplyDrops.Server.Models;

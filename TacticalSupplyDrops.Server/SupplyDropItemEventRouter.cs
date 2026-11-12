@@ -24,7 +24,10 @@ public class SupplyDropItemEventRouter : ItemEventRouter
                         body,
                         sessionId,
                         output,
-                        cancellationToken))
+                        cancellationToken)),
+            new ItemRouteAction<SupplyDropCourierConversionRequest>("TacticalSupplyDropsConvertToCourier",
+                async (url, pmcData, body, sessionId, output, cancellationToken) =>
+                    await callback.HandleCourierConversion(url, pmcData, body, sessionId, output, cancellationToken))
 
         })
     {

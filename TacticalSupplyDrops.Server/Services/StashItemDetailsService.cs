@@ -1,4 +1,4 @@
-﻿
+
 using SPTarkov.DI.Annotations;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,6 +8,8 @@ namespace TacticalSupplyDrops.Server.Services;
 
 public interface IItemDetailsProvider
 {
+    bool IsLooseAmmo(Item item) => false;
+    double GetUnitWeight(Item item) => 0;
     (string Name, int BaseValue, int Width, int Height, string IconUrl, string Category) GetDetails(Item item);
 
     bool IsInstalledInEquipmentSlot(Item item, Item? parent);
@@ -42,7 +44,9 @@ public class StashItemDetailsService(IItemDetailsProvider itemHelper) : IStashIt
                 Height = details.Height,
                 IconUrl = details.IconUrl,
                 Tag = item.Upd?.Tag?.Name ?? string.Empty,
-                Category = details.Category
+                Category = details.Category,
+                IsLooseAmmo = itemHelper.IsLooseAmmo(item),
+                UnitWeight = itemHelper.GetUnitWeight(item)
             };
         }).ToList();
     }
@@ -55,6 +59,8 @@ public class StashItemDetailsService(IItemDetailsProvider itemHelper) : IStashIt
 
 public class StashItemDetails
 {
+    public double UnitWeight { get; set; }
+    public bool IsLooseAmmo { get; set; }
     public string ItemId { get; set; } = string.Empty;
     public string TemplateId { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;

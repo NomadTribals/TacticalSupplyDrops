@@ -2059,8 +2059,8 @@
 .header, .main-navigation, .footer { flex-shrink: 0; }
 .main-navigation { overflow-x: auto; overflow-y: hidden; }
 #cargo-view .workspace {
-    flex: 1 0 480px;
-    min-height: 480px;
+    flex: 1 0 720px;
+    min-height: 720px;
     min-width: 840px;
     grid-template-columns: minmax(460px, 1fr) 340px;
 }
@@ -2105,6 +2105,20 @@
 html,body{margin:0!important;padding:0!important;width:100%;height:100%;overflow:hidden!important;}
 body>.app{box-sizing:border-box;position:relative!important;inset:auto!important;width:100%!important;max-width:none!important;height:100vh!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;}
 .app::before,.app::after{display:none!important;}.app>.header{flex-shrink:0;}.hidden{display:none!important;}
+
+.delivery-options { border:0; margin:0 0 12px; padding:0; display:grid; gap:8px; }
+.delivery-options legend { color:#bda577; font-size:11px; letter-spacing:2px; margin-bottom:10px; }
+.delivery-option { display:flex; align-items:flex-start; gap:10px; padding:12px; border:1px solid #44494a; background:#111719; border-radius:6px; cursor:pointer; }
+.delivery-option:has(input:checked) { border-color:#c39958; background:linear-gradient(120deg,#30291d,#141a1c); }
+.delivery-option input { margin-top:3px; accent-color:#d2a35d; }
+.delivery-option strong { display:block; font-size:12px; letter-spacing:1px; color:#e2d8c2; }
+.delivery-option small { display:block; color:#a9b1b2; line-height:1.6; margin-top:4px; font-size:11px; }
+#delivery-capacity.is-invalid { color:#f0aa7e; border-left:2px solid #e68c53; padding-left:9px; }
+.delivery-fee-note { font-size:10px; opacity:.7; }
+
+#confirmed-delivery-fee {color:#c6d9b3;font-size:12px;padding:10px;border:1px solid #536747;background:#172118;}
+.cargo-value-secondary {opacity:.65;font-size:9px;}
+#courier-fallback-quote {color:#e2c58f;font-size:12px;line-height:1.7;padding:12px;border:1px solid #92703a;background:#252016;}
 </style></head><body><div class="app" data-app="logistics"><header class='header'>
             <svg class='header-flight-art' viewBox='0 0 520 150' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
                 <path d='M28 83 L196 70 L242 48 L270 48 L255 69 L470 81 L492 90 L255 94 L280 119 L265 122 L230 96 L82 105 L28 94 Z' fill='currentColor'/>
@@ -2286,6 +2300,16 @@ body>.app{box-sizing:border-box;position:relative!important;inset:auto!important
                 </div>
 
                 <div class='manifest-summary'>
+                    <fieldset class='delivery-options'>
+                        <legend>DELIVERY SERVICE</legend>
+                        <label class='delivery-option'><input type='radio' name='delivery-service' value='standard' checked>
+                            <span><strong>STANDARD CARGO</strong><small>Large cargo • aircraft or local courier<br>₽5,000 base + ₽1,000/kg*</small></span></label>
+                        <label class='delivery-option'><input type='radio' name='delivery-service' value='drone'>
+                            <span><strong>DRONE DELIVERY</strong><small>4 × 3 parcel • up to 5 kg • outdoor handoff<br>Ammo, meds, food &amp; drinks<br>₽2,000 base + ₽500/kg*</small></span></label>
+                    </fieldset>
+                    <div id='delivery-capacity' class='manifest-note' role='status'></div>
+                    <div class='manifest-note delivery-fee-note'>*Fence reputation applies. Each confirmed order has a service fee. Different delivery services travel separately.</div>
+
 
                     <div class='summary-line'>
                         <span>SELECTED ITEM TYPES</span>
@@ -2297,8 +2321,10 @@ body>.app{box-sizing:border-box;position:relative!important;inset:auto!important
                         <strong id='selected-units'>0</strong>
                     </div>
 
-                    <div class='summary-line total'>
-                        <span>EST. BASE VALUE</span>
+                    <div class='summary-line'><span>PAYLOAD WEIGHT</span><strong id='selected-weight'>0 kg</strong></div>
+                    <div class='summary-line total'><span>EST. DELIVERY FEE</span><strong id='estimated-delivery-fee'>₽0</strong></div>
+                    <div class='summary-line cargo-value-secondary'>
+                        <span>CARGO VALUE · NOT DELIVERY FEE</span>
                         <strong id='selected-value'>₽0</strong>
                     </div>
 
@@ -2306,6 +2332,7 @@ body>.app{box-sizing:border-box;position:relative!important;inset:auto!important
     This is a draft requisition summary.
 </div>
 
+<div id='confirmed-delivery-fee' class='manifest-note' role='status' hidden></div>
 <div id='order-status' class='manifest-note'>
     Orders are ready for connection.
 </div>
@@ -2367,6 +2394,7 @@ body>.app{box-sizing:border-box;position:relative!important;inset:auto!important
                 </div>
                 <div class='delivery-action'>
                     <div id='delivery-terminal-link' class='delivery-link-status'>FIELD TERMINAL LINK: CHECKING</div>
+                    <div id='courier-fallback-quote' class='manifest-note' role='status' hidden></div>
                     <button id='confirm-delivery' class='purchase-button' type='button' disabled>CONFIRM CARGO DELIVERY</button>
                     <div class='delivery-help'>Carry the TSD Field Terminal in your PMC inventory during raid. Cargo can be dispatched once per accepted order; vanilla airdrops keep their normal smoke.</div>
                 </div>
@@ -2661,6 +2689,7 @@ window.tsd.onProcurementResponseReceived = function(responseJson) {
     let activeDeliveryOrder = null;
     let deliveryTerminalAccess = false;
     let deliveryInRaid = false;
+    let droneUnavailableOnMap = false;
     let deliveryDispatchPending = false; setTabletDataActivity('deliveryDispatchPending', false);
     let lastDeliverySequence = 0;
     let selectedItems = {};
@@ -2776,8 +2805,110 @@ if (refreshStashButton) {
             .trim();
     }
 
-    function getMaxQuantity(item) {
+    let selectedDeliveryMethod = 'standard';
+    let deliveryPricing = null;
+    function quotedCargoEntries() {
+        const result = new Map();
+        const add = item => {
+            if (!item || result.has(item.Id)) return;
+            result.set(item.Id, {item, quantity: selectedItems[item.Id] ?? getStackQuantity(item)});
+            stashItems.filter(child => child.ParentId === item.Id).forEach(add);
+        };
+        Object.keys(selectedItems).map(getItemById).forEach(add);
+        return [...result.values()];
+    }
+    function selectedPayloadWeight() {
+        return quotedCargoEntries().reduce((sum, entry) => sum + Math.max(0, Number(entry.item.UnitWeight) || 0) * entry.quantity, 0);
+    }
+    function estimateDeliveryFee() {
+        if (!Object.keys(selectedItems).length) return 0;
+        if (!deliveryPricing) return null;
+        const drone = selectedDeliveryMethod === 'drone';
+        const base = Number(drone ? deliveryPricing.droneBaseFee : deliveryPricing.standardBaseFee);
+        const rate = Number(drone ? deliveryPricing.droneRatePerKg : deliveryPricing.standardRatePerKg);
+        const multiplier = Number(deliveryPricing.fenceMultiplier);
+        if (![base, rate, multiplier].every(Number.isFinite)) return null;
+        return Math.ceil((base + Number(selectedPayloadWeight().toFixed(6)) * rate) * multiplier - 1e-8);
+    }
+    function updateDeliveryEstimate() {
+        const weight = document.getElementById('selected-weight');
+        if (weight) weight.textContent = selectedPayloadWeight().toFixed(3) + ' kg';
+        const fee = estimateDeliveryFee();
+        const label = document.getElementById('estimated-delivery-fee');
+        if (label) label.textContent = fee === null ? 'REFRESH STASH' : '₽' + formatNumber(fee);
+        const submit = document.getElementById('submit-order');
+        if (submit) submit.textContent = fee === null ? 'SUBMIT SUPPLY ORDER' : 'SUBMIT ORDER · EST. ₽' + formatNumber(fee);
+    }
+    function droneSelectionProblem() {
+        const entries = Object.keys(selectedItems).map(getItemById).filter(Boolean);
+        if (selectedPayloadWeight() > Number(deliveryPricing?.droneMaxWeightKg ?? 5) + 1e-8) return 'Drone payload exceeds 5 kg. Reduce cargo or choose Standard Cargo.';
+        let cells = 0;
+        for (const item of entries) {
+            if (!['AMMO','MEDICAL','FOOD'].includes(item.Category) || isContainer(item))
+                return cleanItemName(item.Name) + ' is not supported by Drone Delivery. Choose Standard Cargo.';
+            const w = Number(item.Width) || 1, h = Number(item.Height) || 1;
+            if (!((w <= 4 && h <= 3) || (w <= 3 && h <= 4)))
+                return cleanItemName(item.Name) + ' is too large for the 4 × 3 parcel.';
+            cells += w * h;
+        }
+        return cells > 12 ? 'Drone parcel full: ' + cells + ' / 12 cells. Reduce cargo or choose Standard Cargo.' : '';
+    }
+    function updateDeliveryChoice() {
+        updateDeliveryEstimate();
+        const hint = document.getElementById('delivery-capacity');
+        const problem = selectedDeliveryMethod === 'drone' ? droneSelectionProblem() : '';
+        hint.textContent = problem || (selectedDeliveryMethod === 'drone' ? 'COMPACT PARCEL • 12 CELLS • MAX 5 KG • OUTDOOR HANDOFF' : 'STANDARD CRATE • 60 CARGO CELLS');
+        hint.classList.toggle('is-invalid', !!problem);
+        const button = document.getElementById('submit-order');
+        if (button) button.disabled = orderPending || !!problem;
+        document.querySelectorAll('[name="delivery-service"]').forEach(input => input.disabled = orderPending);
+    }
+    document.querySelectorAll('[name="delivery-service"]').forEach(input => input.addEventListener('change', () => {
+        selectedDeliveryMethod = input.value;
+        updateDeliveryChoice();
+    }));
+
+    function getStackQuantity(item) {
         return Math.max(1, Number(item.StackCount) || 1);
+    }
+
+    function isPooledAmmo(item) {
+        return item && item.Category === 'AMMO' && item.IsLooseAmmo === true && !isContainer(item);
+    }
+
+    function getAmmoStacks(item) {
+        return stashItems.filter(candidate => candidate.TemplateId === item.TemplateId && isPooledAmmo(candidate));
+    }
+
+    function getMaxQuantity(item) {
+        if (!isPooledAmmo(item)) return getStackQuantity(item);
+        return getAmmoStacks(item).reduce((sum, stack) => sum + getStackQuantity(stack), 0);
+    }
+
+    function getManifestQuantity(item) {
+        if (!isPooledAmmo(item)) return selectedItems[item.Id] || 0;
+        return getAmmoStacks(item).reduce((sum, stack) => sum + (selectedItems[stack.Id] || 0), 0);
+    }
+
+    function setAmmoQuantity(item, requested) {
+        const stacks = getAmmoStacks(item).sort((a, b) => Number(!!selectedItems[b.Id]) - Number(!!selectedItems[a.Id]));
+        let remaining = Math.min(getMaxQuantity(item), Math.max(0, requested));
+        for (const stack of stacks) {
+            delete selectedItems[stack.Id];
+            const quantity = Math.min(remaining, getStackQuantity(stack));
+            if (quantity > 0) selectedItems[stack.Id] = quantity;
+            remaining -= quantity;
+        }
+    }
+
+    function distinctAmmoRows(items) {
+        const seen = new Set();
+        return items.filter(item => {
+            if (!isPooledAmmo(item)) return true;
+            if (seen.has(item.TemplateId)) return false;
+            seen.add(item.TemplateId);
+            return true;
+        });
     }
 
     function formatNumber(value) {
@@ -2950,6 +3081,11 @@ function updateNavigation() {
             return;
         }
 
+        if (isPooledAmmo(item)) {
+            setAmmoQuantity(item, getManifestQuantity(item) > 0 ? 0 : 1);
+            displayItems();
+            return;
+        }
         if (selectedItems[item.Id] !== undefined) {
             delete selectedItems[item.Id];
         } else {
@@ -2964,11 +3100,19 @@ function updateNavigation() {
             return;
         }
 
-        delete selectedItems[id];
+        const item = getItemById(id);
+        if (isPooledAmmo(item)) setAmmoQuantity(item, 0);
+        else delete selectedItems[id];
         displayItems();
     }
 
     function changeQuantity(item, amount) {
+        if (orderPending) return;
+        if (isPooledAmmo(item)) {
+            setAmmoQuantity(item, Math.max(1, getManifestQuantity(item) + amount));
+            displayItems();
+            return;
+        }
         if (orderPending) {
             return;
         }
@@ -2990,6 +3134,12 @@ function updateNavigation() {
     }
 
     function setQuantity(item, value) {
+        if (orderPending) return;
+        if (isPooledAmmo(item)) {
+            setAmmoQuantity(item, Math.max(1, (parseInt(value, 10) || 1)));
+            displayItems();
+            return;
+        }
         if (orderPending) {
             return;
         }
@@ -3034,7 +3184,7 @@ function updateNavigation() {
             }
 
             selectedItems[id] = Math.min(
-                getMaxQuantity(item),
+                getStackQuantity(item),
                 selectedItems[id]
             );
         });
@@ -3076,7 +3226,7 @@ function updateNavigation() {
 
     function createInventoryCard(item, searchMode) {
         const id = item.Id;
-        const selected = selectedItems[id] !== undefined;
+        const selected = getManifestQuantity(item) > 0;
         const container = isContainer(item);
 
         const card = document.createElement('div');
@@ -3112,7 +3262,7 @@ function updateNavigation() {
 
         quantity.innerHTML =
             'QTY: <strong>' +
-            formatNumber(item.StackCount) +
+            formatNumber(isPooledAmmo(item) ? getMaxQuantity(item) : item.StackCount) +
             '</strong>';
 
         const dimensions = document.createElement('span');
@@ -3261,7 +3411,7 @@ function displayItems() {
     }
 
     // Apply selected sorting.
-    filteredItems = sortInventoryItems(filteredItems);
+    filteredItems = sortInventoryItems(distinctAmmoRows(filteredItems));
 
     itemList.innerHTML = '';
 
@@ -3290,6 +3440,7 @@ function displayItems() {
 
     updateNavigation();
     displayManifest();
+    updateDeliveryChoice();
 }
 
 
@@ -3344,8 +3495,8 @@ document.querySelectorAll('.category-button').forEach(button => {
 
             manifestList.appendChild(empty);
         } else {
-            selectedIds.forEach(id => {
-                const item = getItemById(id);
+            distinctAmmoRows(selectedIds.map(getItemById).filter(Boolean)).forEach(item => {
+                const id = item.Id;
 
                 if (!item) {
                     return;
@@ -3392,7 +3543,7 @@ document.querySelectorAll('.category-button').forEach(button => {
                 const label = document.createElement('span');
 
                 label.className = 'quantity-label';
-                label.textContent = 'QUANTITY';
+                label.textContent = isPooledAmmo(item) ? 'ROUNDS · ' + formatNumber(getMaxQuantity(item)) + ' AVAILABLE' : 'QUANTITY';
 
                 const controls = document.createElement('div');
 
@@ -3403,7 +3554,7 @@ document.querySelectorAll('.category-button').forEach(button => {
                 minus.className = 'quantity-button';
                 minus.type = 'button';
                 minus.textContent = '−';
-                minus.disabled = selectedItems[id] <= 1;
+                minus.disabled = getManifestQuantity(item) <= 1;
 
                 minus.addEventListener('click', () => {
                     changeQuantity(item, -1);
@@ -3415,7 +3566,7 @@ document.querySelectorAll('.category-button').forEach(button => {
                 input.type = 'number';
                 input.min = '1';
                 input.max = String(getMaxQuantity(item));
-                input.value = String(selectedItems[id]);
+                input.value = String(getManifestQuantity(item));
 
                 input.addEventListener('change', () => {
                     setQuantity(item, input.value);
@@ -3434,7 +3585,7 @@ document.querySelectorAll('.category-button').forEach(button => {
                 plus.textContent = '+';
 
                 plus.disabled =
-                    selectedItems[id] >= getMaxQuantity(item);
+                    getManifestQuantity(item) >= getMaxQuantity(item);
 
                 plus.addEventListener('click', () => {
                     changeQuantity(item, 1);
@@ -3455,7 +3606,7 @@ document.querySelectorAll('.category-button').forEach(button => {
         }
 
         selectedCount.textContent =
-            formatNumber(getSelectedItemCount());
+            formatNumber(distinctAmmoRows(Object.keys(selectedItems).map(getItemById).filter(Boolean)).length);
 
         selectedUnits.textContent =
             formatNumber(getSelectedUnitCount());
@@ -3477,6 +3628,7 @@ function loadStash(data) {
     }
 
     stashItems = data.items;
+    deliveryPricing = data.deliveryPricing || null;
     stashRootParentId = data.stashRootId || null;
     updateRoubleBalance(data.balanceRoubles);
     updateWalletBalances(data.wallet);
@@ -3541,6 +3693,13 @@ function loadStash(data) {
         }).filter(Boolean).join(' • ');
         const cargoValue = document.getElementById('delivery-cargo-value');
         if (cargoValue && activeDeliveryOrder && activeDeliveryOrder.alreadyDispatched) cargoValue.textContent = 'PREVIOUS ORDER DISPATCHED';
+        const fallback = !!(droneUnavailableOnMap && activeDeliveryOrder?.available && !activeDeliveryOrder.alreadyDispatched && activeDeliveryOrder.deliveryMethod === 'drone');
+        const quote = document.getElementById('courier-fallback-quote');
+        if (quote) {
+            quote.hidden = !fallback;
+            quote.textContent = fallback ? 'DRONE UNAVAILABLE ON THIS MAP · GROUND COURIER AVAILABLE. Total fee: ₽' + formatNumber(activeDeliveryOrder.courierTotalFee) +
+                '. Already paid: ₽' + formatNumber(activeDeliveryOrder.paidFee) + '. Balance due: ₽' + formatNumber(activeDeliveryOrder.courierAdditionalFee) + '. Your reserved items stay in this order.' : '';
+        }
         const button = document.getElementById('confirm-delivery');
         const link = document.getElementById('delivery-terminal-link');
         if (link) {
@@ -3563,7 +3722,7 @@ function loadStash(data) {
                 ? 'ORDER ALREADY DISPATCHED'
                 : deliveryDispatchPending
                     ? 'DISPATCH SEQUENCE ACTIVE'
-                    : activeDeliveryOrder && activeDeliveryOrder.retryable ? 'RETRY CARGO DELIVERY' : 'CONFIRM CARGO DELIVERY';
+                    : fallback ? 'CONFIRM COURIER · PAY BALANCE ₽' + formatNumber(activeDeliveryOrder.courierAdditionalFee) : activeDeliveryOrder && activeDeliveryOrder.retryable ? 'RETRY CARGO DELIVERY' : 'CONFIRM CARGO DELIVERY';
         }
     }
 
@@ -3587,7 +3746,9 @@ function loadStash(data) {
         if (window.tabletApp && window.tabletApp.send) {
             window.tabletApp.send('tsd-dispatch-delivery', JSON.stringify({
                 RequestId: requestId,
-                OrderId: activeDeliveryOrder.orderId
+                OrderId: activeDeliveryOrder.orderId,
+                UseCourierFallback: droneUnavailableOnMap && activeDeliveryOrder.deliveryMethod === 'drone',
+                ExpectedAdditionalFee: activeDeliveryOrder.courierAdditionalFee || 0
             }));
         }
     }
@@ -3611,14 +3772,14 @@ function loadStash(data) {
         if (collected && state.orderId) recordTsdActivity('Collection', 'Cargo recovered.', 'collected/' + state.orderId);
         const pending = state.phase === 'pending';
         const unavailable = state.phase === 'unavailable';
-        document.getElementById('ground-cargo-status').textContent = pending ? 'COURIER HANDOFF PENDING' : unavailable ? 'DELIVERY NOT PLACED' : collected ? 'CARGO RECOVERED' : 'CARGO BEACON ACTIVE';
+        document.getElementById('ground-cargo-status').textContent = pending ? (state.method === 'drone' ? 'DRONE INBOUND' : 'COURIER HANDOFF PENDING') : unavailable ? 'DELIVERY NOT PLACED' : collected ? 'CARGO RECOVERED' : state.method === 'drone' ? 'DRONE PARCEL DELIVERED' : 'CARGO BEACON ACTIVE';
         document.getElementById('ground-cargo-guidance').hidden = !state.available || collected;
         document.getElementById('ground-cargo-distance').textContent = Number.isFinite(state.distance) ? Math.max(0, state.distance).toFixed(1) + ' m' : 'LOCATING';
         document.getElementById('ground-cargo-direction').textContent = state.direction || '';
         document.getElementById('ground-cargo-level').textContent = state.level || '';
         document.getElementById('ground-cargo-hint').textContent = pending || unavailable ? (state.message || 'Check courier status.') : collected
             ? 'Cargo recovered.'
-            : (state.testOnly ? 'Prototype shipment: one test bandage. ' : '') + 'Your cargo is ready for collection' + personalName + '. Thank you for choosing TSD. Follow the tablet guidance; look for the orange light and listen for the nearby beeper.';
+            : (state.testOnly ? 'Prototype shipment: one test bandage. ' : '') + 'Your cargo is ready for collection' + personalName + '. Thank you for choosing TSD. ' + (state.method === 'drone' ? 'Follow the tablet guidance to the small orange-sealed TSD parcel.' : 'Follow the tablet guidance; look for the orange light and listen for the nearby beeper.');
     };
 
     function updatePlayerIdentity(nickname) {
@@ -3633,8 +3794,9 @@ function loadStash(data) {
         updatePlayerIdentity(state && state.nickname);
         const method = document.getElementById('delivery-method');
         if (method) method.textContent = 'DELIVERY METHOD: ' + (state && state.inRaid
-            ? state.deliveryMethod === 'courier' ? 'GROUND COURIER' : state.deliveryMethod === 'aircraft' ? 'AIRCRAFT DELIVERY' : 'CONFIRMING ROUTE'
+            ? activeDeliveryOrder?.available && !activeDeliveryOrder.alreadyDispatched && activeDeliveryOrder.deliveryMethod === 'drone' ? (state.droneUnavailable ? 'GROUND COURIER · DRONE UNAVAILABLE' : 'DRONE DELIVERY · OUTDOOR HANDOFF') : state.deliveryMethod === 'courier' ? 'GROUND COURIER' : state.deliveryMethod === 'aircraft' ? 'AIRCRAFT DELIVERY' : 'CONFIRMING ROUTE'
             : 'ENTER RAID TO CONFIRM');
+        droneUnavailableOnMap = !!(state && state.inRaid && state.droneUnavailable);
         deliveryTerminalAccess = !!(state && state.hasAccess);
         deliveryInRaid = !!(state && state.inRaid);
         updateDeliveryControls();
@@ -3654,9 +3816,13 @@ function loadStash(data) {
         }
         if (reference) {
             reference.textContent = activeDeliveryOrder && activeDeliveryOrder.available
-                ? 'ORDER ' + activeDeliveryOrder.orderId
+                ? (activeDeliveryOrder.deliveryMethod === 'drone' ? 'DRONE PARCEL · ' : 'STANDARD CARGO · ') + activeDeliveryOrder.orderId
                 : 'Confirm a cargo manifest on Cargo, then dispatch it during raid.';
         }
+        const paidFee = document.getElementById('confirmed-delivery-fee');
+        if (paidFee) { paidFee.hidden = !(activeDeliveryOrder?.available && Number.isFinite(activeDeliveryOrder.paidFee)); paidFee.textContent = paidFee.hidden ? '' : 'CONFIRMED SHIPMENT · DELIVERY FEES PAID: ₽' + formatNumber(activeDeliveryOrder.paidFee); }
+        const routeLabel = document.getElementById('delivery-method');
+        if (routeLabel && activeDeliveryOrder?.available && !activeDeliveryOrder.alreadyDispatched && activeDeliveryOrder.deliveryMethod === 'drone') routeLabel.textContent = droneUnavailableOnMap ? 'DELIVERY METHOD: GROUND COURIER · DRONE UNAVAILABLE' : 'DELIVERY METHOD: DRONE · OUTDOOR HANDOFF';
         if (newOrder) {
             deliveryDispatchPending = false; setTabletDataActivity('deliveryDispatchPending', false);
             lastDeliverySequence = 0;
@@ -3750,6 +3916,8 @@ function loadStash(data) {
             return;
         }
 
+        const droneProblem = selectedDeliveryMethod === 'drone' ? droneSelectionProblem() : '';
+        if (droneProblem) { updateOrderStatus(droneProblem); return; }
         const selectedIds = Object.keys(selectedItems);
 
         if (selectedIds.length === 0) {
@@ -3767,6 +3935,7 @@ function loadStash(data) {
                     Action: "TacticalSupplyDropsCreateOrder",
                     RequestId: requestId,
                     SelectedItemIds: selectedIds,
+                    DeliveryMethod: selectedDeliveryMethod,
                     SelectedItemQuantities: selectedItems
                 }
             ]
@@ -3901,7 +4070,7 @@ function loadStash(data) {
                 );
 
                 updateOrderStatus(
-                    'ORDER REJECTED — CHECK SERVER WARNINGS'
+                    serverResult.data.warnings[0].errmsg || serverResult.data.warnings[0].ErrorMessage || serverResult.data.warnings[0].errorMessage || 'ORDER REJECTED — CHECK SERVER WARNINGS'
                 );
             } else {
                 updateOrderStatus('ORDER ACCEPTED BY SERVER');
@@ -3933,6 +4102,7 @@ function loadStash(data) {
         }
 
         orderPending = false; setTabletDataActivity('orderPending', false);
+        updateDeliveryChoice();
 
         const button =
             document.getElementById('submit-order');

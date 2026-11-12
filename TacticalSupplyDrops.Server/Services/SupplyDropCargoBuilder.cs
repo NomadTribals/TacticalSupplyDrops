@@ -1,4 +1,4 @@
-﻿
+
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.Extensions;
 using SPTarkov.Server.Core.Helpers.Items;
@@ -19,12 +19,12 @@ public class SupplyDropCargoBuilder(
     ItemHelper itemHelper,
     ICloner cloner)
 {
-    public Item CreateCrate()
+    public Item CreateCrate(bool drone = false)
     {
         return new Item
         {
             Id = new MongoId(),
-            Template = ItemTpl.LOOTCONTAINER_AIRDROP_COMMON_SUPPLY_CRATE,
+            Template = drone ? new MongoId(DroneDeliveryPolicy.ParcelTemplateId) : ItemTpl.LOOTCONTAINER_AIRDROP_COMMON_SUPPLY_CRATE,
             Upd = new Upd
             {
                 SpawnedInSession = true,
@@ -37,7 +37,7 @@ public class SupplyDropCargoBuilder(
     {
         ArgumentNullException.ThrowIfNull(order);
 
-        Item crate = CreateCrate();
+        Item crate = CreateCrate(order.DeliveryMethod == "drone");
 
         List<Item> savedItems = order.Items
      .Where(entry => entry.Items != null)
@@ -87,6 +87,12 @@ public class SupplyDropCargoBuilder(
             itemHelper.GetContainerMapping(crate.Template);
 
         List<Item> cargo = new();
+        var droneSlots = order.DeliveryMethod == "drone" ? DroneDeliveryPolicy.Pack(roots.Select(root =>
+        {
+            var size = itemHelper.GetItemSize(GetItemGroup(root, childrenByParent), root.Id);
+            return (size.Width, size.Height);
+        }).ToArray()) ?? throw new InvalidOperationException("Cargo does not fit the drone parcel.") : null;
+        int rootIndex = 0;
 
         foreach (Item root in roots)
         {
@@ -107,6 +113,11 @@ public class SupplyDropCargoBuilder(
                 itemSize.Width,
                 itemSize.Height);
 
+            if (droneSlots != null)
+            {
+                var placement = droneSlots[rootIndex++];
+                slot.Success = true; slot.X = placement.X; slot.Y = placement.Y; slot.Rotation = placement.Rotated;
+            }
             if (!(slot.Success ?? false) ||
                 !slot.X.HasValue ||
                 !slot.Y.HasValue)
@@ -141,6 +152,38 @@ public class SupplyDropCargoBuilder(
         return new List<Item> { crate }
             .Concat(cargo)
             .ToList();
+    }
+
+    public SupplyOrder CombineOrders(IReadOnlyList<SupplyOrder> orders)
+    {
+        if (orders.Count == 0) throw new ArgumentException("No cargo orders were supplied.");
+        var combined = new SupplyOrder
+        {
+            DeliveryMethod = orders[0].DeliveryMethod,
+            OrderId = orders[^1].OrderId,
+            RequestId = orders[^1].RequestId,
+            TotalPrice = checked(orders.Sum(order => order.TotalPrice)),
+            TotalFootprint = checked(orders.Sum(order => order.TotalFootprint))
+        };
+        foreach (var order in orders)
+        {
+            // Separate reservations can retain the same source stack ID.
+            // Give every shipment its own IDs before combining those reservations.
+            var saved = order.Items.Where(entry => entry.Items != null).SelectMany(entry => entry.Items)
+                .DistinctBy(item => item.Id).ToList();
+            var ids = saved.ToDictionary(item => item.Id.ToString(), _ => new MongoId());
+            foreach (var original in saved)
+            {
+                var item = cloner.Clone(original) ?? throw new InvalidOperationException("Cargo copy failed.");
+                item.Id = ids[original.Id.ToString()];
+                if (item.ParentId != null && ids.TryGetValue(item.ParentId, out var parent)) item.ParentId = parent.ToString();
+                combined.Items.Add(new SupplyOrderItem(item.Id.ToString(), item.GetItemStackSize())
+                {
+                    Items = new List<Item> { item }
+                });
+            }
+        }
+        return combined;
     }
 
     private static List<Item> GetItemGroup(
